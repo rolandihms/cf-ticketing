@@ -1,5 +1,7 @@
 # CF Helpdesk
 
+[![CI](https://github.com/rolandihms/cf-ticketing/actions/workflows/ci.yml/badge.svg)](https://github.com/rolandihms/cf-ticketing/actions/workflows/ci.yml)
+
 An open-source help desk and ticketing system that runs entirely on Cloudflare.
 
 Email arrives at `support@yourdomain.com` and Cloudflare Email Routing hands it to a Worker. The Worker starts a durable **Workflow**, which:
