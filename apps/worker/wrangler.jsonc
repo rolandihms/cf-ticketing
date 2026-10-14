@@ -1,0 +1,48 @@
+// CF Helpdesk Worker configuration.
+// `npm run setup` (scripts/setup.ts) fills in the placeholders for your account.
+// Local dev (`wrangler dev`) works as-is: D1, R2 and Workflows are simulated locally.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cf-helpdesk",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // Inbound addresses routed to this Worker. `wrangler deploy` creates the Email Routing rules.
+  // Top-level only (cannot be set per env). Uncomment after running setup:
+  // "addresses": ["support@example.com"],
+
+  "send_email": [{ "name": "EMAIL" }],
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cf-helpdesk",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "r2_buckets": [{ "binding": "MAIL", "bucket_name": "cf-helpdesk-mail" }],
+
+  "workflows": [
+    {
+      "binding": "INBOUND_WORKFLOW",
+      "name": "cf-helpdesk-inbound",
+      "class_name": "InboundEmailWorkflow"
+    }
+  ],
+
+  "vars": {
+    // "send": acknowledge via Email Sending (Workers Paid, any recipient).
+    // "reply": acknowledge via message.reply() in the email handler (Free plan, DMARC-passing senders only).
+    // "off": no acknowledgements.
+    "ACK_MODE": "send",
+    // "raw": build MIME ourselves (full header control). "builder": use the structured send() API.
+    "EMAIL_SEND_FORMAT": "raw",
+    // Auto-create a mailbox on first email to an unknown address (dev convenience). Otherwise reject.
+    "AUTO_CREATE_MAILBOXES": "false",
+    "DEFAULT_REF_PREFIX": "TKT"
+  }
+}
