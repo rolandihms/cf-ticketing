@@ -201,7 +201,7 @@ Tooling: TypeScript, Vitest + `@cloudflare/vitest-plugin` (renamed from vitest-p
 
 Verdict from the review: **feasible on Cloudflare-native primitives, and Phase 1 is a realistic ~2-week build.** The review confirmed the platform facts in §1, with the corrections and additions below.
 
-**Day-1 spikes (resolve these before writing the main code)**
+**Day-1 spikes: all resolved on 2026-10-14. See docs/SPIKES.md (raw MIME keeps every header except Message-ID, which Cloudflare rewrites).**
 1. **Email Sending header allowlist (blocker until checked).** `send()` headers are "subject to an allowlist", and the list is undocumented. It may strip `In-Reply-To`, `References`, `Auto-Submitted` or `X-Helpdesk-Ticket`. Spike: send a message through the binding and inspect what arrives. If headers are stripped, fall back to sending a raw RFC 5322 message (built with `mimetext`) through `send(EmailMessage)`. Store the returned `messageId` so customer replies thread back.
 2. **Workflows under `@cloudflare/vitest-plugin` (renamed from vitest-pool-workers).** If they aren't supported, unit-test the `run()` body with a fake `step`.
 3. **Sending from inside a Workflow step.** This is undocumented but expected to work, so confirm it in the e2e test. Local dev needs `remote: true` on the binding to actually send.
