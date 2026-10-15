@@ -1,0 +1,49 @@
+name: Database dialects
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "packages/db/**"
+      - "packages/core/**"
+      - ".github/workflows/db.yml"
+
+jobs:
+  dialects:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: helpdesk
+          POSTGRES_DB: helpdesk
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: helpdesk
+          MYSQL_DATABASE: helpdesk
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -phelpdesk" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PG_URL: postgres://postgres:helpdesk@127.0.0.1:5432/helpdesk
+      MYSQL_URL: mysql://root:helpdesk@127.0.0.1:3306/helpdesk
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Generated migrations are up to date
+        run: npm run check -w packages/db
+      - name: Migrate CLI (postgres, mysql)
+        run: |
+          npm run db:migrate -- --driver postgres --url "$PG_URL"
+          npm run db:migrate -- --driver mysql --url "$MYSQL_URL"
+      - name: Repo contract tests (PGlite, postgres server, mysql server)
+        run: npm test -w packages/db

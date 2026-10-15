@@ -2,7 +2,8 @@ import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import worker from "../src";
-import { D1Repo } from "../src/db/repo";
+import { D1Dialect, D1Repo } from "@cf-helpdesk/db";
+import { Kysely } from "kysely";
 import { inboundMessage, rawEmail } from "./helpers";
 
 const SUPPORT = "support@acme.test";
@@ -26,7 +27,7 @@ async function runOne(fn: () => Promise<unknown>) {
   return outputs as { ticketRef: string; created: boolean; threadedBy: string; acked: boolean }[];
 }
 
-const repo = () => new D1Repo(env.DB);
+const repo = () => new D1Repo(env.DB, new Kysely({ dialect: new D1Dialect(env.DB) }));
 
 beforeEach(async () => {
   for (const t of ["attachments", "ticket_events", "messages", "tickets", "contacts", "counters", "mailboxes"]) {

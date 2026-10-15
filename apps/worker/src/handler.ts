@@ -1,6 +1,6 @@
 import { computeIngestKey, evaluateInbound, type Mailbox } from "@cf-helpdesk/core";
 import { EmailMessage } from "cloudflare:email";
-import { createRepo, type HelpdeskRepo } from "./db/repo";
+import { createRepo, type HelpdeskRepo } from "@cf-helpdesk/db";
 import { newMessageId, toRawMime } from "./email/outbound";
 import { parseAndStore, r2Prefix } from "./email/parse";
 import { ackTemplate } from "./email/templates";
@@ -29,7 +29,15 @@ async function resolveMailbox(repo: HelpdeskRepo, env: Env, address: string): Pr
  * and every step downstream is idempotent so redelivery is safe.
  */
 export async function handleEmail(message: ForwardableEmailMessage, env: Env): Promise<void> {
-  const repo = createRepo(env);
+  const repo = await createRepo(env);
+  try {
+    await handle(message, env, repo);
+  } finally {
+    await repo.close();
+  }
+}
+
+async function handle(message: ForwardableEmailMessage, env: Env, repo: HelpdeskRepo): Promise<void> {
   const to = message.to.toLowerCase();
 
   const mailbox = await resolveMailbox(repo, env, to);

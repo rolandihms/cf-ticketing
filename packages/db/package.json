@@ -1,0 +1,35 @@
+{
+  "name": "@cf-helpdesk/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "generate": "tsx scripts/generate.ts",
+    "check": "tsx scripts/generate.ts --check",
+    "migrate": "tsx scripts/migrate.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@cf-helpdesk/core": "*",
+    "@planetscale/database": "^2.0.0",
+    "kysely": "^0.29.6",
+    "kysely-planetscale": "^1.7.1",
+    "mysql2": "^3.24.6",
+    "pg": "^8.23.1",
+    "ulidx": "^2.4.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261015.1",
+    "@electric-sql/pglite": "^0.5.10",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.0"
+  }
+}

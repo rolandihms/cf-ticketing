@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { createRepo, D1Repo } from "./db/repo";
+import { withRepo } from "@cf-helpdesk/db";
 
 function timingSafeEqual(a: string, b: string): boolean {
   const ea = new TextEncoder().encode(a);
@@ -24,25 +24,19 @@ api.use("/api/*", async (c, next) => {
 });
 
 api.get("/api/tickets", async (c) => {
-  const repo = createRepo(c.env);
-  const tickets = await repo.listTickets({
-    status: c.req.query("status"),
-    limit: Number(c.req.query("limit") ?? 25),
-    cursor: c.req.query("cursor"),
-  });
+  const tickets = await withRepo(c.env, (repo) =>
+    repo.listTickets({
+      status: c.req.query("status"),
+      limit: Number(c.req.query("limit") ?? 25),
+      cursor: c.req.query("cursor"),
+    }),
+  );
   return c.json({ tickets, nextCursor: tickets.length ? tickets[tickets.length - 1]!.id : null });
 });
 
 api.get("/api/tickets/:ref", async (c) => {
-  const repo = new D1Repo(c.env.DB);
-  const ticket = await repo.findTicketByRef(c.req.param("ref"));
-  if (!ticket) return c.json({ error: "not found" }, 404);
-  const [messages, events, requester] = await Promise.all([
-    repo.db.selectFrom("messages").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").execute(),
-    repo.db.selectFrom("ticket_events").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").execute(),
-    repo.getContact(ticket.requesterId),
-  ]);
-  return c.json({ ticket, requester, messages, events });
+  const detail = await withRepo(c.env, (repo) => repo.getTicketDetail(c.req.param("ref")));
+  return detail ? c.json(detail) : c.json({ error: "not found" }, 404);
 });
 
 api.post("/api/mailboxes", async (c) => {
@@ -50,5 +44,5 @@ api.post("/api/mailboxes", async (c) => {
   if (!body.address?.includes("@") || !/^[A-Z0-9]{2,10}$/i.test(body.refPrefix ?? "")) {
     return c.json({ error: "address and refPrefix (2-10 alphanumerics) required" }, 400);
   }
-  return c.json(await createRepo(c.env).createMailbox(body), 201);
+  return c.json(await withRepo(c.env, (repo) => repo.createMailbox(body)), 201);
 });

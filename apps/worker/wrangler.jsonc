@@ -20,7 +20,7 @@
       "binding": "DB",
       "database_name": "cf-helpdesk",
       "database_id": "00000000-0000-0000-0000-000000000000",
-      "migrations_dir": "migrations"
+      "migrations_dir": "../../packages/db/migrations/sqlite"
     }
   ],
 
@@ -34,7 +34,12 @@
     }
   ],
 
+  // Postgres / MySQL instead of D1: set DB_DRIVER and add a Hyperdrive binding (see docs/DATABASE.md).
+  // "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<hyperdrive-id>", "localConnectionString": "postgres://..." }],
+
   "vars": {
+    // d1 | postgres | mysql | planetscale
+    "DB_DRIVER": "d1",
     // "send": acknowledge via Email Sending (Workers Paid, any recipient).
     // "reply": acknowledge via message.reply() in the email handler (Free plan, DMARC-passing senders only).
     // "off": no acknowledgements.
