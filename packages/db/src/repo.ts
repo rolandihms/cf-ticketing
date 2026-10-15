@@ -1,8 +1,11 @@
-import { formatRef, type Mailbox, type Ticket, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
+import { type ClassificationOutcome, formatRef, type Mailbox, type Ticket, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
 import { type InsertQueryBuilder, type InsertResult, Kysely, sql, type Transaction } from "kysely";
-import { ulid } from "ulidx";
+import { monotonicFactory } from "ulidx";
+
+// Monotonic: ids created in the same millisecond still sort in creation order.
+const ulid = monotonicFactory();
 import { toD1Statement } from "./d1-dialect";
-import type { Database, MessagesTable, TicketEventsTable, TicketsTable } from "./schema";
+import type { Database, MessagesTable, TicketClassificationsTable, TicketEventsTable, TicketsTable } from "./schema";
 import type { SqlDialect } from "./types";
 
 export type NewMessage = Omit<MessagesTable, "id" | "ticket_id" | "mailbox_id" | "created_at">;
@@ -25,6 +28,14 @@ export interface TicketDetail {
   requester: Contact | null;
   messages: MessagesTable[];
   events: TicketEventsTable[];
+  classifications: TicketClassificationsTable[];
+}
+
+export interface SaveClassificationInput {
+  ticket: Ticket;
+  /** The inbound message that was classified. */
+  messageId: string;
+  outcome: ClassificationOutcome;
 }
 
 /** Storage port used by the Worker. One implementation per dialect family; see createRepo(). */
@@ -57,6 +68,12 @@ export interface HelpdeskRepo {
     actor: string;
   }): Promise<{ messageId: string }>;
   addEvent(ticketId: string, type: string, actor: string, data?: unknown): Promise<void>;
+  /**
+   * Persist every classifier attempt, update the ticket's category/summary (and priority, if still the
+   * default) and record a `ticket.classified` event, atomically. Idempotent per (ticket, message):
+   * a retried Workflow step replaces the previous rows instead of duplicating them.
+   */
+  saveClassification(input: SaveClassificationInput): Promise<void>;
   listTickets(filter: { status?: string; mailboxId?: string; limit: number; cursor?: string }): Promise<Ticket[]>;
   /** Release connections (no-op for D1). Call when the request/step is done. */
   close(): Promise<void>;
@@ -77,8 +94,14 @@ function toTicket(r: TicketsTable): Ticket {
     assigneeId: r.assignee_id,
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
+    category: r.category ?? null,
+    categoryConfidence: r.category_confidence == null ? null : Number(r.category_confidence) / 1000,
+    codeRelated: r.code_related == null ? null : Number(r.code_related) === 1,
+    summary: r.summary ?? null,
   };
 }
+
+const milli = (x: number) => Math.round(Math.min(1, Math.max(0, x)) * 1000);
 
 /** Normalise driver differences (pg/PlanetScale return BIGINT as string) for rows we hand out. */
 function normaliseRow<T extends { created_at: number }>(r: T): T {
@@ -197,12 +220,19 @@ export class SqlRepo implements HelpdeskRepo {
   async getTicketDetail(ref: string): Promise<TicketDetail | null> {
     const ticket = await this.findTicketByRef(ref);
     if (!ticket) return null;
-    const [messages, events, requester] = await Promise.all([
+    const [messages, events, classifications, requester] = await Promise.all([
       this.db.selectFrom("messages").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").orderBy("id").execute(),
       this.db.selectFrom("ticket_events").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").orderBy("id").execute(),
+      this.db.selectFrom("ticket_classifications").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").orderBy("id").execute(),
       this.getContact(ticket.requesterId),
     ]);
-    return { ticket, requester, messages: messages.map(normaliseRow), events: events.map(normaliseRow) };
+    return {
+      ticket,
+      requester,
+      messages: messages.map(normaliseRow),
+      events: events.map(normaliseRow),
+      classifications: classifications.map(normaliseRow),
+    };
   }
 
   /**
@@ -243,6 +273,12 @@ export class SqlRepo implements HelpdeskRepo {
     await this.db.insertInto("ticket_events").values(this.eventRow(ticketId, type, actor, data, now())).execute();
   }
 
+  async saveClassification(input: SaveClassificationInput) {
+    await this.db.transaction().execute(async (tx) => {
+      for (const q of this.classificationWrites(tx, input)) await q.execute();
+    });
+  }
+
   async listTickets(filter: { status?: string; mailboxId?: string; limit: number; cursor?: string }) {
     let q = this.db.selectFrom("tickets").selectAll().orderBy("id", "desc").limit(Math.max(1, Math.min(filter.limit || 25, 100)));
     if (filter.status) q = q.where("status", "=", filter.status);
@@ -252,6 +288,52 @@ export class SqlRepo implements HelpdeskRepo {
   }
 
   // ---- row builders shared with D1Repo -------------------------------------------------------
+
+  /** The ordered writes for saveClassification; run in a transaction (SQL) or a batch (D1). */
+  protected classificationWrites(db: Db, { ticket, messageId, outcome }: SaveClassificationInput) {
+    const t = now();
+    const actor = `system:classify:${messageId}`;
+    const rows = outcome.attempts.map((a) => ({
+      id: ulid(),
+      ticket_id: ticket.id,
+      message_id: messageId,
+      classifier: a.classifier,
+      provider: a.meta?.provider ?? null,
+      model: a.meta?.model ?? null,
+      category: a.result?.category ?? null,
+      confidence: a.result ? milli(a.result.confidence) : null,
+      code_related: a.result ? (a.result.codeRelated ? 1 : 0) : null,
+      accepted: outcome.acceptedBy === a.classifier ? 1 : 0,
+      result_json: a.result ? JSON.stringify(a.result) : null,
+      error_text: a.error ? a.error.slice(0, 2000) : null,
+      log_id: a.meta?.logId ?? null,
+      duration_ms: Math.round(a.durationMs),
+      created_at: t,
+    }));
+    const touch: Record<string, unknown> = {
+      category: outcome.category,
+      category_confidence: milli(outcome.confidence),
+      code_related: outcome.codeRelated ? 1 : 0,
+      summary: outcome.summary ?? null,
+      updated_at: t,
+    };
+    // Only raise priority from the default; never override a human's choice.
+    if (outcome.priority && ticket.priority === "normal") touch.priority = outcome.priority;
+    return [
+      db.deleteFrom("ticket_classifications").where("ticket_id", "=", ticket.id).where("message_id", "=", messageId),
+      db.deleteFrom("ticket_events").where("ticket_id", "=", ticket.id).where("type", "=", "ticket.classified").where("actor", "=", actor),
+      ...(rows.length ? [db.insertInto("ticket_classifications").values(rows)] : []),
+      db.updateTable("tickets").set(touch).where("id", "=", ticket.id),
+      db.insertInto("ticket_events").values(
+        this.eventRow(ticket.id, "ticket.classified", actor, {
+          category: outcome.category,
+          confidence: outcome.confidence,
+          acceptedBy: outcome.acceptedBy,
+          codeRelated: outcome.codeRelated,
+        }, t),
+      ),
+    ];
+  }
 
   protected ticketRow(
     input: Parameters<HelpdeskRepo["createTicketWithFirstMessage"]>[0],
@@ -276,6 +358,10 @@ export class SqlRepo implements HelpdeskRepo {
       created_at: t,
       updated_at: t,
       closed_at: null,
+      category: null,
+      category_confidence: null,
+      code_related: null,
+      summary: null,
     };
   }
 
@@ -353,6 +439,10 @@ export class D1Repo extends SqlRepo {
       throw new Error(`ref format mismatch: SQL produced ${ticket.ref}, app expects ${formatRef(input.mailbox.refPrefix, ticket.number)}`);
     }
     return { ticket, messageId };
+  }
+
+  override async saveClassification(input: SaveClassificationInput) {
+    await this.batch(this.classificationWrites(this.db, input));
   }
 
   override async appendMessage(input: Parameters<HelpdeskRepo["appendMessage"]>[0]) {

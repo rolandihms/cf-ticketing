@@ -7,6 +7,8 @@ export default defineConfig(async () => {
     plugins: [
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
+        // Never reach real Cloudflare services (Workers AI) from tests; LLM steps are mocked.
+        remoteBindings: false,
         miniflare: { bindings: { TEST_MIGRATIONS: migrations, API_TOKEN: "test-token" } },
       }),
     ],

@@ -41,6 +41,11 @@ export interface TicketsTable {
   created_at: number;
   updated_at: number;
   closed_at: number | null;
+  category: string | null;
+  /** Thousandths (0–1000). */
+  category_confidence: number | null;
+  code_related: number | null;
+  summary: string | null;
 }
 
 export interface MessagesTable {
@@ -85,6 +90,37 @@ export interface TicketEventsTable {
   created_at: number;
 }
 
+export interface TicketClassificationsTable {
+  id: string;
+  ticket_id: string;
+  message_id: string | null;
+  classifier: string;
+  provider: string | null;
+  model: string | null;
+  category: string | null;
+  /** Thousandths (0–1000). */
+  confidence: number | null;
+  code_related: number | null;
+  accepted: number;
+  result_json: string | null;
+  error_text: string | null;
+  log_id: string | null;
+  duration_ms: number | null;
+  created_at: number;
+}
+
+export interface TicketLinksTable {
+  id: string;
+  ticket_id: string;
+  provider: string;
+  external_id: string;
+  url: string | null;
+  state: string | null;
+  data_json: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface CountersTable {
   scope: string;
   value: number;
@@ -99,4 +135,6 @@ export interface Database {
   attachments: AttachmentsTable;
   ticket_events: TicketEventsTable;
   counters: CountersTable;
+  ticket_classifications: TicketClassificationsTable;
+  ticket_links: TicketLinksTable;
 }

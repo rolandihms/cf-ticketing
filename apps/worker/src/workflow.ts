@@ -6,6 +6,7 @@ import { newMessageId, sendViaBinding, type SendFormat } from "./email/outbound"
 import { parseAndStore, type StoredRawRef } from "./email/parse";
 import { ackTemplate } from "./email/templates";
 import { ingestInbound } from "./ingest";
+import { classifyStage } from "./classify";
 import { runPlugins } from "./plugins/runner";
 
 export interface InboundParams extends StoredRawRef {
@@ -20,6 +21,7 @@ export interface InboundOutput {
   created: boolean;
   threadedBy: string;
   acked: boolean;
+  category?: string;
 }
 
 export class InboundEmailWorkflow extends WorkflowEntrypoint<Env, InboundParams> {
@@ -36,7 +38,8 @@ export class InboundEmailWorkflow extends WorkflowEntrypoint<Env, InboundParams>
         return { mailbox, ticket: r.ticket, created: r.created, messageId: r.messageId, threadedBy: r.threadedBy };
       }),
     );
-    const { mailbox, ticket } = persisted;
+    const { mailbox } = persisted;
+    let ticket = persisted.ticket;
 
     let acked = false;
     const shouldAck = p.ack === "workflow" && persisted.created && p.guard.allowAutoReply && config.ackNewTickets !== false;
@@ -97,13 +100,20 @@ export class InboundEmailWorkflow extends WorkflowEntrypoint<Env, InboundParams>
       acked = true;
     }
 
-    await runPlugins(
-      config,
-      step,
-      { event: persisted.created ? "ticket.created" : "message.received", ticket, mailbox, message: meta, env: this.env },
-      (plugin, error) => withRepo(this.env, (repo) => repo.addEvent(ticket.id, "plugin.failed", `plugin:${plugin}`, { error })),
-    );
+    // Classify new tickets (and replies, if enabled) before plugins run, so hooks see the result.
+    const cls = config.classification;
+    const classified =
+      cls && (persisted.created || cls.reclassifyOnReply)
+        ? await classifyStage(step, this.env, cls, ticket, persisted.messageId, meta)
+        : undefined;
+    if (classified) ticket = classified.ticket;
 
-    return { ticketRef: ticket.ref, ticketId: ticket.id, created: persisted.created, threadedBy: persisted.threadedBy, acked: acked || p.ack === "handled" };
+    const onFailure = (plugin: string, error: string) =>
+      withRepo(this.env, (repo) => repo.addEvent(ticket.id, "plugin.failed", `plugin:${plugin}`, { error }));
+    const base = { ticket, mailbox, message: meta, env: this.env, ...(classified ? { classification: classified.outcome } : {}) };
+    await runPlugins(config, step, { ...base, event: persisted.created ? "ticket.created" : "message.received" }, onFailure);
+    if (classified) await runPlugins(config, step, { ...base, event: "ticket.classified" }, onFailure);
+
+    return { ticketRef: ticket.ref, ticketId: ticket.id, created: persisted.created, threadedBy: persisted.threadedBy, acked: acked || p.ack === "handled", ...(classified ? { category: classified.outcome.category } : {}) };
   }
 }

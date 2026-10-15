@@ -22,6 +22,12 @@ export interface Ticket {
   assigneeId: string | null;
   createdAt: number;
   updatedAt: number;
+  /** Set by classification; null until classified. */
+  category: string | null;
+  /** 0..1 */
+  categoryConfidence: number | null;
+  codeRelated: boolean | null;
+  summary: string | null;
 }
 
 /** Parsed inbound email, small enough to pass between Workflow steps (bodies live in R2). */
