@@ -13,7 +13,15 @@ The generated `.sql` files are committed so you can review them. CI fails if the
 
 ## Choosing a backend
 
-| `DB_DRIVER` | Connection | Migrations |
+The driver is chosen **at build time** in `apps/worker/wrangler.jsonc`:
+
+```jsonc
+"define": { "__HELPDESK_DB_DRIVER__": "\"postgres\"" },   // d1 (default) | postgres | mysql | planetscale | all
+```
+
+esbuild drops every other driver from the bundle (see [Bundle size](#bundle-size)). `"all"` bundles every driver and lets the runtime `DB_DRIVER` var pick one. With a single-driver build, a mismatching `DB_DRIVER` fails with a clear error. `define` can be set per wrangler environment, so staging and production can use different backends.
+
+| Driver | Connection | Migrations |
 |---|---|---|
 | `d1` (default) | D1 binding `DB` | `npx wrangler d1 migrations apply DB --remote` |
 | `postgres` | Hyperdrive binding `HYPERDRIVE` (or `DATABASE_URL`) using `pg` | `npm run db:migrate -- --driver postgres --url …` |
@@ -22,7 +30,7 @@ The generated `.sql` files are committed so you can review them. CI fails if the
 
 For **PlanetScale Postgres**, use `postgres` with Hyperdrive. For **a MySQL/Postgres server on your LAN**, put Hyperdrive in front of a Cloudflare Tunnel or Workers VPC. In local dev, `localConnectionString` on the Hyperdrive binding connects directly.
 
-Only the selected driver is *initialised*, because `pg`, `mysql2` and the PlanetScale driver are imported lazily. See [Bundle size](#bundle-size) for what still ships.
+Only the selected driver is bundled. The others are removed at build time.
 
 ### PlanetScale (MySQL/Vitess) migrations
 
@@ -77,7 +85,17 @@ The SQLite SQL used to be hand-written in `apps/worker/migrations/0001_init.sql`
 
 ## Bundle size
 
-Wrangler emits a single bundle, so `pg`, `mysql2` (with iconv-lite) and the PlanetScale driver ship with every deployment: about 1.4 MB of a 2.5 MB bundle (600 KB gzipped). They are never evaluated unless selected, but parsing them still counts toward the Worker startup budget. A planned follow-up is a build-time driver selection: a wrangler `alias` to a stub for the drivers you don't use.
+`connect.ts` puts each driver behind a branch that compares `__HELPDESK_DB_DRIVER__` directly. Wrangler's esbuild replaces that identifier with the configured literal, folds the comparison, and removes the dead branch together with its dynamic `import()`. Measured with `wrangler deploy --dry-run` (wrangler 4.151):
+
+| `__HELPDESK_DB_DRIVER__` | Upload | gzip |
+|---|---|---|
+| `"d1"` (default) | 682 KiB | 129 KiB |
+| `"planetscale"` | 888 KiB | 153 KiB |
+| `"postgres"` | 1,030 KiB | 186 KiB |
+| `"mysql"` | 2,223 KiB | 554 KiB (mysql2 + iconv-lite) |
+| `"all"` | 2,483 KiB | 603 KiB |
+
+Before this change, every build was the `"all"` size. Outside a wrangler build, for example in Node scripts or tests, the identifier is undefined, so a `typeof` guard includes every driver.
 
 ## Adding a migration
 

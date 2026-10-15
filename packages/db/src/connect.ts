@@ -1,8 +1,17 @@
-import { Kysely, MysqlDialect, PostgresDialect } from "kysely";
+import { Kysely } from "kysely";
 import { D1Dialect } from "./d1-dialect";
-import { D1Repo, type HelpdeskRepo, SqlRepo } from "./repo";
+import { D1Repo, type HelpdeskRepo } from "./repo";
 import type { Database } from "./schema";
 import type { DbDriver } from "./types";
+
+/**
+ * Build-time driver selection. Set in wrangler.jsonc:
+ *   "define": { "__HELPDESK_DB_DRIVER__": "\"d1\"" }   // d1 | postgres | mysql | planetscale | all
+ * esbuild replaces the identifier with the literal and removes the branches (and their dynamic
+ * imports) for every other driver, so a D1 build ships none of pg / mysql2 / PlanetScale.
+ * "all" bundles every driver and lets the DB_DRIVER var choose at runtime.
+ */
+declare const __HELPDESK_DB_DRIVER__: string;
 
 /**
  * Environment the repo factory reads. Only the bindings for the chosen driver need to exist.
@@ -18,10 +27,27 @@ export interface DbEnv {
   DATABASE_URL?: string;
 }
 
+const DRIVERS: DbDriver[] = ["d1", "postgres", "mysql", "planetscale"];
+
+/** The driver baked in at build time, or "all". Falls back to "all" outside a wrangler build. */
+export function buildDriver(): DbDriver | "all" {
+  return typeof __HELPDESK_DB_DRIVER__ === "string" ? (__HELPDESK_DB_DRIVER__ as DbDriver | "all") : "all";
+}
+
+/** Runtime driver: DB_DRIVER if set, otherwise the build-time driver (d1 for an "all" build). */
 export function driverOf(env: DbEnv): DbDriver {
-  const d = (env.DB_DRIVER || "d1").toLowerCase();
-  if (d === "d1" || d === "postgres" || d === "mysql" || d === "planetscale") return d;
-  throw new Error(`Unsupported DB_DRIVER "${env.DB_DRIVER}" (expected d1 | postgres | mysql | planetscale)`);
+  const built = buildDriver();
+  const d = (env.DB_DRIVER || (built === "all" ? "d1" : built)).toLowerCase() as DbDriver;
+  if (!DRIVERS.includes(d)) {
+    throw new Error(`Unsupported DB_DRIVER "${env.DB_DRIVER}" (expected ${DRIVERS.join(" | ")})`);
+  }
+  if (built !== "all" && d !== built) {
+    throw new Error(
+      `DB_DRIVER=${d} but this Worker was built with only the "${built}" driver. ` +
+        `Set "define": { "__HELPDESK_DB_DRIVER__": "\\"${d}\\"" } in wrangler.jsonc (or "\\"all\\"") and redeploy.`,
+    );
+  }
+  return d;
 }
 
 function connectionString(env: DbEnv, driver: DbDriver): string {
@@ -31,50 +57,30 @@ function connectionString(env: DbEnv, driver: DbDriver): string {
 }
 
 /**
- * Create a repository for the configured driver. Drivers are imported lazily so a D1 deployment
- * never *initialises* pg/mysql2 — but note they are still bundled (~1.4 MB) because wrangler emits a
- * single chunk; see docs/DATABASE.md "Bundle size". Call `repo.close()` when done (no-op on D1).
+ * Create a repository for the configured driver. Call `repo.close()` when done (no-op on D1).
+ * Each non-D1 branch compares the define directly so esbuild can fold it and drop the import.
+ * The `typeof` guard keeps this usable without a define (Node, other bundlers): everything is included.
  */
 export async function createRepo(env: DbEnv): Promise<HelpdeskRepo> {
   const driver = driverOf(env);
-  switch (driver) {
-    case "d1": {
-      if (!env.DB) throw new Error("DB_DRIVER=d1 needs a D1 binding named DB");
-      return new D1Repo(env.DB, new Kysely<Database>({ dialect: new D1Dialect(env.DB) }));
-    }
-    case "postgres": {
-      const pg = await import("pg");
-      const Pool = pg.Pool ?? pg.default.Pool;
-      const globalTypes = pg.types ?? pg.default.types;
-      // BIGINT (int8) comes back as string by default; our timestamps fit in a JS number.
-      // Per-pool override, so we don't mutate pg's process-global parser registry.
-      const types = {
-        getTypeParser: (oid: number, format?: "text" | "binary") =>
-          oid === 20 ? (v: string) => Number(v) : globalTypes.getTypeParser(oid, format as "text"),
-      };
-      // Hyperdrive does the real pooling; a pool per invocation is what its docs recommend.
-      const pool = new Pool({ connectionString: connectionString(env, driver), max: 2, types: types as never });
-      return new SqlRepo(new Kysely<Database>({ dialect: new PostgresDialect({ pool }) }), "postgres");
-    }
-    case "mysql": {
-      const mysql = await import("mysql2");
-      const createPool = mysql.createPool ?? mysql.default.createPool;
-      const pool = createPool({ uri: connectionString(env, driver), connectionLimit: 2, disableEval: true } as never);
-      return new SqlRepo(new Kysely<Database>({ dialect: new MysqlDialect({ pool }) }), "mysql");
-    }
-    case "planetscale": {
-      const { PlanetScaleDialect } = await import("kysely-planetscale");
-      const { cast } = await import("@planetscale/database");
-      if (!env.DATABASE_URL) throw new Error("DB_DRIVER=planetscale needs a DATABASE_URL secret");
-      const dialect = new PlanetScaleDialect({
-        url: env.DATABASE_URL,
-        // INT64 arrives as string; normalise to number like the other drivers. This replaces
-        // kysely-planetscale's default date inflation, which we don't need (no DATETIME columns).
-        cast: (field, value) => (field.type === "INT64" || field.type === "UINT64" ? (value == null ? null : Number(value)) : cast(field, value)),
-      });
-      return new SqlRepo(new Kysely<Database>({ dialect }), "mysql");
-    }
+  if (driver === "d1") {
+    if (!env.DB) throw new Error("DB_DRIVER=d1 needs a D1 binding named DB");
+    return new D1Repo(env.DB, new Kysely<Database>({ dialect: new D1Dialect(env.DB) }));
   }
+  if ((typeof __HELPDESK_DB_DRIVER__ === "undefined" || __HELPDESK_DB_DRIVER__ === "postgres" || __HELPDESK_DB_DRIVER__ === "all") && driver === "postgres") {
+    const { createPostgresRepo } = await import("./drivers/postgres");
+    return createPostgresRepo(connectionString(env, driver));
+  }
+  if ((typeof __HELPDESK_DB_DRIVER__ === "undefined" || __HELPDESK_DB_DRIVER__ === "mysql" || __HELPDESK_DB_DRIVER__ === "all") && driver === "mysql") {
+    const { createMysqlRepo } = await import("./drivers/mysql");
+    return createMysqlRepo(connectionString(env, driver));
+  }
+  if ((typeof __HELPDESK_DB_DRIVER__ === "undefined" || __HELPDESK_DB_DRIVER__ === "planetscale" || __HELPDESK_DB_DRIVER__ === "all") && driver === "planetscale") {
+    if (!env.DATABASE_URL) throw new Error("DB_DRIVER=planetscale needs a DATABASE_URL secret");
+    const { createPlanetScaleRepo } = await import("./drivers/planetscale");
+    return createPlanetScaleRepo(env.DATABASE_URL);
+  }
+  throw new Error(`driver "${driver}" is not included in this build`);
 }
 
 /** Run `fn` with a repo and always release its connections. */
