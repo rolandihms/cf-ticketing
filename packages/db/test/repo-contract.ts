@@ -124,6 +124,35 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
       expect(detail.requester?.email).toBe("jane@cust.example");
     });
 
+    it("saves classifications atomically and idempotently", async () => {
+      const c = await repo.upsertContact("jane@cust.example", null);
+      const { ticket, messageId } = await repo.createTicketWithFirstMessage({ mailbox, requesterId: c.id, subject: "a", sourceIngestKey: key(1), message: inbound(key(1)), attachments: [] });
+      const outcome = {
+        category: "bug",
+        confidence: 0.9,
+        codeRelated: true,
+        priority: "high" as const,
+        summary: "App crashes on export",
+        acceptedBy: "llm",
+        attempts: [
+          { classifier: "rules", result: null, durationMs: 1 },
+          { classifier: "llm", result: { category: "bug", confidence: 0.9, codeRelated: true, summary: "App crashes on export" }, meta: { provider: "workers-ai", model: "m", logId: "log1" }, durationMs: 250 },
+        ],
+      };
+      await repo.saveClassification({ ticket, messageId, outcome });
+      await repo.saveClassification({ ticket, messageId, outcome }); // retried step: no duplicates
+
+      const d = (await repo.getTicketDetail(ticket.ref))!;
+      expect(d.ticket).toMatchObject({ category: "bug", categoryConfidence: 0.9, codeRelated: true, summary: "App crashes on export", priority: "high" });
+      expect(d.classifications.map((x) => [x.classifier, Number(x.accepted), x.category])).toEqual([["rules", 0, null], ["llm", 1, "bug"]]);
+      expect(d.classifications[1]).toMatchObject({ provider: "workers-ai", model: "m", log_id: "log1" });
+      expect(d.events.filter((e) => e.type === "ticket.classified")).toHaveLength(1);
+
+      // A human-set priority is never overridden.
+      await repo.saveClassification({ ticket: { ...d.ticket, priority: "low" }, messageId, outcome: { ...outcome, priority: "urgent" } });
+      expect((await repo.getTicket(ticket.id))!.priority).toBe("high");
+    });
+
     it("lists tickets with cursor pagination", async () => {
       const c = await repo.upsertContact("jane@cust.example", null);
       for (let i = 1; i <= 3; i++) {
@@ -136,4 +165,4 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
   });
 }
 
-export const TABLES = ["attachments", "ticket_events", "messages", "tickets", "contacts", "agents", "counters", "mailboxes"] as const;
+export const TABLES = ["ticket_links", "ticket_classifications", "attachments", "ticket_events", "messages", "tickets", "contacts", "agents", "counters", "mailboxes"] as const;

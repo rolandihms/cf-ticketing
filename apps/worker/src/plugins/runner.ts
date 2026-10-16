@@ -17,7 +17,9 @@ export async function runPlugins<Env>(
 ) {
   const event: Event = base.event;
   for (const plugin of config.plugins) {
-    const hook = event === "ticket.created" ? plugin.onTicketCreated : plugin.onMessageReceived;
+    const hook = (
+      event === "ticket.created" ? plugin.onTicketCreated : event === "message.received" ? plugin.onMessageReceived : plugin.onTicketClassified
+    ) as ((ctx: HookContext<Env>) => Promise<void>) | undefined;
     if (!hook) continue;
     const prefix = `plugin:${plugin.name}:${event}:`;
     const pluginStep: PluginStep = {

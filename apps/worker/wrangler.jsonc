@@ -19,6 +19,9 @@
 
   "send_email": [{ "name": "EMAIL" }],
 
+  // Workers AI, used by the default LLM classifier (always runs remotely, even in wrangler dev).
+  "ai": { "binding": "AI" },
+
   "d1_databases": [
     {
       "binding": "DB",
@@ -52,6 +55,9 @@
     "EMAIL_SEND_FORMAT": "raw",
     // Auto-create a mailbox on first email to an unknown address (dev convenience). Otherwise reject.
     "AUTO_CREATE_MAILBOXES": "false",
-    "DEFAULT_REF_PREFIX": "TKT"
+    "DEFAULT_REF_PREFIX": "TKT",
+    // Workers AI model for classification (must support JSON mode) and optional AI Gateway id.
+    "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "AI_GATEWAY_ID": ""
   }
 }

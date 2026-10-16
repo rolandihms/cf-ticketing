@@ -1,4 +1,4 @@
-import { introspectWorkflow } from "cloudflare:test";
+import { introspectWorkflow, type WorkflowInstanceModifier } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import worker from "../src";
@@ -15,8 +15,20 @@ async function deliver(raw: string, from = CUSTOMER, to = SUPPORT, overrides: Pa
   return msg;
 }
 
-async function runOne(fn: () => Promise<unknown>) {
+const LLM_QUESTION = {
+  classifier: "llm",
+  result: { category: "question", confidence: 0.82, codeRelated: false, priority: "low", summary: "Customer asks for help" },
+  meta: { provider: "workers-ai", model: "test-model" },
+  durationMs: 5,
+};
+
+/** Runs fn and waits for the Workflow instances it created. Workers AI is mocked (tests never call it). */
+async function runOne(fn: () => Promise<unknown>, mock: (m: WorkflowInstanceModifier) => Promise<void> = (m) => m.mockStepResult({ name: "classify:llm" }, LLM_QUESTION)) {
   await using introspector = await introspectWorkflow(env.INBOUND_WORKFLOW);
+  await introspector.modifyAll(async (m) => {
+    await m.disableRetryDelays();
+    await mock(m);
+  });
   await fn();
   const instances = await introspector.get();
   const outputs = [];
@@ -24,13 +36,13 @@ async function runOne(fn: () => Promise<unknown>) {
     await i.waitForStatus("complete");
     outputs.push(await i.getOutput());
   }
-  return outputs as { ticketRef: string; created: boolean; threadedBy: string; acked: boolean }[];
+  return outputs as { ticketRef: string; created: boolean; threadedBy: string; acked: boolean; category?: string }[];
 }
 
 const repo = () => new D1Repo(env.DB, new Kysely({ dialect: new D1Dialect(env.DB) }));
 
 beforeEach(async () => {
-  for (const t of ["attachments", "ticket_events", "messages", "tickets", "contacts", "counters", "mailboxes"]) {
+  for (const t of ["ticket_links", "ticket_classifications", "attachments", "ticket_events", "messages", "tickets", "contacts", "counters", "mailboxes"]) {
     await env.DB.exec(`DELETE FROM ${t}`);
   }
   await repo().createMailbox({ address: SUPPORT, name: "Acme Support", refPrefix: "ACME" });
@@ -90,6 +102,45 @@ describe("inbound email → ticket", () => {
     expect(unknown.setReject).toHaveBeenCalledWith("Unknown recipient");
     const outputs = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "loop", headers: { "X-Helpdesk-Ticket": "ACME-000009" } })));
     expect(outputs).toHaveLength(0);
+  });
+});
+
+describe("classification", () => {
+  const detail = async (ref: string) => (await repo().getTicketDetail(ref))!;
+
+  it("classifies new tickets with the LLM when rules abstain", async () => {
+    const [r] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "How do I export?", body: "Where is the export button?" })));
+    expect(r).toMatchObject({ category: "question" });
+    const d = await detail(r!.ticketRef);
+    expect(d.ticket).toMatchObject({ category: "question", categoryConfidence: 0.82, codeRelated: false, summary: "Customer asks for help", priority: "low" });
+    expect(d.classifications.map((c) => [c.classifier, Number(c.accepted)])).toEqual([["rules", 0], ["llm", 1]]);
+    expect(d.events.map((e) => e.type)).toContain("ticket.classified");
+  });
+
+  it("short-circuits on a confident rule (no LLM call)", async () => {
+    const [r] = await runOne(() =>
+      deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Crash", body: "Uncaught TypeError: x is undefined\n    at render (app.js:12:4)" })),
+    );
+    const d = await detail(r!.ticketRef);
+    expect(d.ticket).toMatchObject({ category: "bug", codeRelated: true, priority: "high" });
+    expect(d.classifications.map((c) => c.classifier)).toEqual(["rules"]);
+  });
+
+  it("falls back to 'other' when the LLM keeps failing, without failing the ticket", async () => {
+    const [r] = await runOne(
+      () => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Hmm", body: "Something about something" })),
+      (m) => m.mockStepError({ name: "classify:llm" }, new Error("JSON Mode couldn't be met")),
+    );
+    expect(r).toMatchObject({ created: true, acked: true, category: "other" });
+    const d = await detail(r!.ticketRef);
+    expect(d.classifications.find((c) => c.classifier === "llm")?.error_text).toMatch(/JSON Mode/);
+  });
+
+  it("does not reclassify customer replies by default", async () => {
+    await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Help", body: "q" })));
+    const [reply] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Re: [ACME-000001] Help", body: "more" })));
+    expect(reply).toMatchObject({ created: false });
+    expect(reply!.category).toBeUndefined();
   });
 });
 

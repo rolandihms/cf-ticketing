@@ -187,13 +187,33 @@ We will not use the Vercel `ai` SDK for now. One classification call doesn't jus
 
 | Phase | Scope |
 |---|---|
-| **A1** (next PR) | Migration 0003; `Classifier`/`LlmProvider` interfaces in core; the `rules` classifier, plus an `llm` classifier on the `workersAI` provider (no secrets needed); the cascade runner with the config snapshot; the `onTicketClassified` hook; the `ticket.classified` event; the classification shown in the API. |
+| **A1** (done, PR #5) | Migration 0003; `Classifier`/`LlmProvider` interfaces in core; the `rules` classifier, plus an `llm` classifier on the `workersAI` provider (no secrets needed); the cascade runner with the config snapshot; the `onTicketClassified` hook; the `ticket.classified` event; the classification shown in the API. |
 | **A2** | The `openAICompatible` provider (Cloudflare AI Gateway REST, Vercel AI Gateway, OpenRouter) with the structured-output fallback ladder and redaction; mocked-fetch tests plus one live call per gateway. |
 | **A3** | The GitHub plugin in `auto` mode for **private repos only**, with PAT auth, `ticket_links` idempotency and a live test against a private repo. |
 | **B** | Approval mode (`waitForEvent` plus the approve API and the public-repo visibility check); the embeddings classifier; per-mailbox taxonomy and repos; GitHub App auth; the feedback loop (agent re-categorises, stored as a labelled example, plus AI Gateway `patchLog`). |
 | **C** | GitHub webhook (issue closed → ticket update / customer notification); AI-suggested replies for agents. |
 
-## 9. Sources
+## 9. Classifier options research (2026-10-15)
+
+The question was: should classification use a dedicated tool (Jev, Snap, SubQ, something from Cloudflare) or simply an LLM? Findings:
+
+| Option | What it is | Fit |
+|---|---|---|
+| **Jev** (TypeSafe AI) | A non-generative "decision model". You send text plus typed questions (Choice, Score, yes/no) and get back calibrated probabilities; it cannot return invalid JSON. Early access since Sept 2026, at about $0.04 per 1k emails. Available via the TypeSafe API and **Vercel AI Gateway**. | **Strong candidate for later.** Calibrated confidence suits "act above a threshold, escalate below it". Add it as one more `Classifier` once we have a labelled set to compare against. |
+| **Snap 3B** (`bm-natwest/snap-3b`) | An open, Jev-compatible model (Ministral-3B plus LoRA). Gated on Hugging Face, no license yet, trained mostly on banking data. | Not now. It needs GPU hosting outside Cloudflare. |
+| **SubQ** (Subquadratic) | A long-context LLM (12M tokens). | Not a classification tool; not relevant. |
+| **Workers AI classification models** | Only sentiment (`distilbert-sst-2-int8`) and a reranker. | Can't do custom categories. |
+| **Workers AI LoRA** | Generative base models only (gemma, llama-2, mistral). | Encoder classifiers such as SetFit or ModernBERT can't be hosted on Workers AI. |
+| **Embeddings (`@cf/baai/bge-m3`) + Vectorize** | kNN or centroid over labelled examples, with one namespace per tenant. | **Phase B.** Cheapest and fast once agents have corrected 10–30 examples per category. |
+| **LLM + JSON schema** (Workers AI llama-3.3-70b-fp8-fast) | Zero-shot, with categories given in the prompt. | **Phase A1 (shipped).** No labels needed, and per-tenant categories are trivial. |
+
+**Decision:** rules → Workers AI LLM now. Next, agent corrections become labelled examples for an embeddings/Vectorize kNN classifier placed in front of the LLM, with neighbours used as few-shot examples. Jev, Claude Haiku via a gateway, and GEPA prompt optimisation will be evaluated against that labelled set. Cost is not the deciding factor: every option is under $2 per month at our volumes.
+
+**First live results** (ihms.dev, `@cf/meta/llama-3.3-70b-instruct-fp8-fast`):
+- A bug report without a stack trace was classified `bug` (0.9, codeRelated) in 2.6 s. It extracted component, steps to reproduce, expected and actual behaviour.
+- A plan-change email was classified `billing` (0.9).
+
+## 10. Sources
 
 - Cloudflare AI Gateway: REST API ([changelog 2026-05-21](https://developers.cloudflare.com/changelog/post/2026-05-21-rest-api/)), [compat endpoint](https://developers.cloudflare.com/ai-gateway/usage/chat-completion/), [authentication](https://developers.cloudflare.com/ai-gateway/configuration/authentication/), [Worker binding methods](https://developers.cloudflare.com/ai-gateway/usage/worker-binding-methods/)
 - Workers AI: [JSON mode](https://developers.cloudflare.com/workers-ai/features/json-mode/)
