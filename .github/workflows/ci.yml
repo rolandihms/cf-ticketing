@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # allowScripts in package.json is enforced by npm 11; pin the version
+      # used locally so esbuild and workerd postinstalls run the same way.
+      - name: Pin npm
+        run: npm install -g npm@11.19.0
+
+      - name: Install
+        run: npm ci
+
+      - name: Verify install scripts ran
+        run: |
+          npm install-scripts ls
+          node -e "require('child_process').execFileSync(require('path').join(require.resolve('workerd/package.json',{paths:['node_modules/wrangler']}),'..','bin','workerd'),['--version'],{stdio:'inherit'})"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
