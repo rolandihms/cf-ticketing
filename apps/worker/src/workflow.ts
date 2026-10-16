@@ -7,7 +7,8 @@ import { parseAndStore, type StoredRawRef } from "./email/parse";
 import { ackTemplate } from "./email/templates";
 import { ingestInbound } from "./ingest";
 import { classifyStage } from "./classify";
-import { runPlugins } from "./plugins/runner";
+import { PluginRunner } from "./plugins/runner";
+import { ticketServices } from "./plugins/services";
 
 export interface InboundParams extends StoredRawRef {
   guard: GuardResult;
@@ -111,8 +112,9 @@ export class InboundEmailWorkflow extends WorkflowEntrypoint<Env, InboundParams>
     const onFailure = (plugin: string, error: string) =>
       withRepo(this.env, (repo) => repo.addEvent(ticket.id, "plugin.failed", `plugin:${plugin}`, { error }));
     const base = { ticket, mailbox, message: meta, env: this.env, ...(classified ? { classification: classified.outcome } : {}) };
-    await runPlugins(config, step, { ...base, event: persisted.created ? "ticket.created" : "message.received" }, onFailure);
-    if (classified) await runPlugins(config, step, { ...base, event: "ticket.classified" }, onFailure);
+    const runner = new PluginRunner(config, step, (actor) => ticketServices(this.env, ticket.id, actor), base, onFailure);
+    await runner.dispatch(persisted.created ? "ticket.created" : "message.received");
+    if (classified) await runner.dispatch("ticket.classified");
 
     return { ticketRef: ticket.ref, ticketId: ticket.id, created: persisted.created, threadedBy: persisted.threadedBy, acked: acked || p.ack === "handled", ...(classified ? { category: classified.outcome.category } : {}) };
   }

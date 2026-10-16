@@ -1,6 +1,6 @@
 import { introspectWorkflow, type WorkflowInstanceModifier } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src";
 import { D1Dialect, D1Repo } from "@cf-helpdesk/db";
 import { Kysely } from "kysely";
@@ -40,6 +40,30 @@ async function runOne(fn: () => Promise<unknown>, mock: (m: WorkflowInstanceModi
 }
 
 const repo = () => new D1Repo(env.DB, new Kysely({ dialect: new D1Dialect(env.DB) }));
+
+/**
+ * Fake GitHub API + webhook receiver behind globalThis.fetch. This works because the Workers Vitest
+ * integration runs the Workflow in the same isolate as the tests.
+ */
+const outbound: { url: string; method: string; headers: Record<string, string>; body: string }[] = [];
+beforeEach(() => {
+  outbound.length = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const req = new Request(input as RequestInfo, init);
+    const body = req.method === "GET" ? "" : await req.text();
+    outbound.push({ url: req.url, method: req.method, headers: Object.fromEntries(req.headers), body });
+    const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
+    if (req.url === "https://api.github.com/repos/acme/app") return json({ private: true, full_name: "acme/app" });
+    if (req.url === "https://api.github.com/repos/acme/app/labels") return json({ message: "already_exists" }, 422);
+    if (req.url === "https://api.github.com/user") return json({ login: "helpdesk-bot" });
+    if (req.url.startsWith("https://api.github.com/repos/acme/app/issues?")) return json([]);
+    if (req.url === "https://api.github.com/repos/acme/app/issues" && req.method === "POST")
+      return json({ number: 77, html_url: "https://github.com/acme/app/issues/77", title: JSON.parse(body).title, labels: [{ name: "from-helpdesk" }] }, 201);
+    if (req.url === "https://hooks.test/helpdesk") return new Response("ok");
+    throw new Error(`unexpected outbound request: ${req.method} ${req.url}`);
+  });
+});
+afterEach(() => vi.restoreAllMocks());
 
 beforeEach(async () => {
   for (const t of ["ticket_links", "ticket_classifications", "attachments", "ticket_events", "messages", "tickets", "contacts", "counters", "mailboxes"]) {
@@ -141,6 +165,34 @@ describe("classification", () => {
     const [reply] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Re: [ACME-000001] Help", body: "more" })));
     expect(reply).toMatchObject({ created: false });
     expect(reply!.category).toBeUndefined();
+  });
+});
+
+describe("integrations: GitHub issues + webhooks", () => {
+  it("opens a GitHub issue for a code bug and notifies the webhook receiver", async () => {
+    const [r] = await runOne(() =>
+      deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Crash", body: "Uncaught TypeError: x is undefined\n    at render (app.js:12:4)" })),
+    );
+    const post = outbound.find((o) => o.method === "POST" && o.url.endsWith("/repos/acme/app/issues"))!;
+    expect(post).toBeDefined();
+    expect(JSON.parse(post.body).title).toMatch(/^\[ACME-000001\] /);
+    expect(post.headers.authorization).toBe("Bearer test-gh-token");
+
+    const hooks = outbound.filter((o) => o.url === "https://hooks.test/helpdesk");
+    expect(hooks.map((h) => h.headers["x-helpdesk-event"])).toEqual(["ticket.classified", "github.issue.created"]);
+    const created = JSON.parse(hooks[1]!.body);
+    expect(created).toMatchObject({ type: "github.issue.created", ticket: { ref: "ACME-000001", category: "bug" }, data: { number: 77, repo: "acme/app" } });
+    expect(hooks[1]!.headers["x-helpdesk-signature-256"]).toMatch(/^sha256=[0-9a-f]{64}$/);
+
+    const d = (await repo().getTicketDetail(r!.ticketRef))!;
+    expect(await repo().getLink(d.ticket.id, "github")).toMatchObject({ externalId: "acme/app#77", url: "https://github.com/acme/app/issues/77" });
+    expect(d.events.map((e) => e.type)).toContain("github.issue.created");
+  });
+
+  it("does not open issues for non-bug tickets (webhook still gets ticket.classified)", async () => {
+    await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "How do I export?", body: "Where is the button?" })));
+    expect(outbound.some((o) => o.url.includes("api.github.com"))).toBe(false);
+    expect(outbound.filter((o) => o.url === "https://hooks.test/helpdesk").map((h) => h.headers["x-helpdesk-event"])).toEqual(["ticket.classified"]);
   });
 });
 

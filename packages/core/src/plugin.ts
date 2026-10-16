@@ -3,20 +3,62 @@ import type { InboundMessageMeta, Mailbox, Ticket } from "./types";
 
 /** Subset of Workflows' WorkflowStep that plugins may use; step names are namespaced per plugin. */
 export interface PluginStep {
+  /** Durable, retried (default 2 retries) and memoised: side effects belong in here. */
   do<T>(name: string, fn: () => Promise<T>): Promise<T>;
   sleep(name: string, duration: string | number): Promise<void>;
 }
 
+/** A link from a ticket to an object in another system (e.g. a GitHub issue). */
+export interface TicketLink {
+  /** e.g. "github" */
+  provider: string;
+  /** Unique within the provider, e.g. "owner/repo#123" */
+  externalId: string;
+  url: string | null;
+  state: string | null;
+  data?: Record<string, unknown>;
+}
+
+/** Storage operations plugins may perform on the current ticket. Call them inside `step.do`. */
+export interface TicketServices {
+  addEvent(type: string, data?: Record<string, unknown>): Promise<void>;
+  getLink(provider: string): Promise<TicketLink | null>;
+  /** Insert-if-absent per (ticket, provider); returns the stored link (existing one wins). */
+  saveLink(link: TicketLink): Promise<TicketLink>;
+}
+
+/**
+ * A domain event delivered to `onEvent`. Built-in types: ticket.created, message.received,
+ * ticket.classified. Plugins add their own via `ctx.emit` (e.g. github.issue.created).
+ */
+export interface HelpdeskEvent {
+  /** Deterministic per ticket Workflow run; use it to dedupe deliveries. */
+  id: string;
+  type: string;
+  occurredAt: number;
+  /** Plugin that emitted it, or "core". */
+  source: string;
+  data: Record<string, unknown>;
+}
+
+export type BuiltinEvent = "ticket.created" | "message.received" | "ticket.classified";
+
 export interface HookContext<Env = unknown> {
-  event: "ticket.created" | "message.received" | "ticket.classified";
+  event: BuiltinEvent;
   ticket: Ticket;
   mailbox: Mailbox;
   message: InboundMessageMeta;
   env: Env;
   step: PluginStep;
+  services: TicketServices;
   log: (msg: string, data?: Record<string, unknown>) => void;
   /** Present when classification ran for this message (always for ticket.classified). */
   classification?: ClassificationOutcome;
+  /**
+   * Publish an event to every other plugin's `onEvent` (and record it on the ticket).
+   * Types are `namespace.name` in lowercase, e.g. "github.issue.created".
+   */
+  emit(type: string, data: Record<string, unknown>): Promise<void>;
 }
 
 export interface HelpdeskPlugin<Env = unknown> {
@@ -25,6 +67,8 @@ export interface HelpdeskPlugin<Env = unknown> {
   onMessageReceived?(ctx: HookContext<Env>): Promise<void>;
   /** After classification is persisted; `ctx.classification` is set. Route on it (e.g. GitHub issues). */
   onTicketClassified?(ctx: HookContext<Env> & { classification: ClassificationOutcome }): Promise<void>;
+  /** Every built-in and plugin-emitted event (except the plugin's own). Good for fan-out (webhooks). */
+  onEvent?(ctx: HookContext<Env> & { helpdeskEvent: HelpdeskEvent }): Promise<void>;
 }
 
 export interface HelpdeskConfig<Env = unknown> {
@@ -34,6 +78,8 @@ export interface HelpdeskConfig<Env = unknown> {
   /** Classification cascade (docs/AI-PIPELINE.md). Omit to disable classification. */
   classification?: ClassificationConfig<Env>;
 }
+
+export const EVENT_TYPE_RE = /^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/;
 
 export function defineHelpdesk<Env>(config: HelpdeskConfig<Env>): HelpdeskConfig<Env> {
   const names = new Set<string>();

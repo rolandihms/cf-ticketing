@@ -19,7 +19,8 @@
     "hono": "^4.13.0",
     "kysely": "^0.29.6",
     "postal-mime": "^4.0.6",
-    "ulidx": "^2.4.1"
+    "ulidx": "^2.4.1",
+    "@cf-helpdesk/plugins": "*"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.2",

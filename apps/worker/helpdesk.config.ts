@@ -1,5 +1,6 @@
 // Your help desk configuration. See docs/PLUGINS.md and docs/AI-PIPELINE.md.
 import { DEFAULT_CATEGORIES, defineHelpdesk, llmClassifier, rulesClassifier } from "@cf-helpdesk/core";
+import { githubIssues, webhooks } from "@cf-helpdesk/plugins";
 import { workersAI } from "./src/ai/workers-ai";
 import { loggerPlugin } from "./src/plugins/logger";
 
@@ -20,5 +21,27 @@ export default defineHelpdesk<Env>({
     ],
   },
 
-  plugins: [loggerPlugin],
+  plugins: [
+    loggerPlugin,
+
+    // Optional: open a GitHub issue for code-related bug tickets. Off until GITHUB_REPO and the
+    // GITHUB_TOKEN secret are set. Route per mailbox by returning a different repo from `repo`.
+    githubIssues<Env>({
+      repo: ({ env }) => env.GITHUB_REPO || null,
+      token: (env) => env.GITHUB_TOKEN,
+      // when: (c) => c.category === "bug" && c.codeRelated && c.confidence >= 0.7,   // the default
+    }),
+
+    // Optional: notify another system (signed POST) when things happen. Off until WEBHOOK_URL is set.
+    webhooks<Env>({
+      endpoints: [
+        {
+          name: "default",
+          url: (env) => env.WEBHOOK_URL || undefined,
+          secret: (env) => env.WEBHOOK_SECRET,
+          events: ["github.issue.created", "ticket.classified"],
+        },
+      ],
+    }),
+  ],
 });
