@@ -1,7 +1,7 @@
 import { normalizeMessageId, type GuardResult } from "@cf-helpdesk/core";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 import config from "../helpdesk.config";
-import { createRepo } from "./db/repo";
+import { withRepo } from "@cf-helpdesk/db";
 import { newMessageId, sendViaBinding, type SendFormat } from "./email/outbound";
 import { parseAndStore, type StoredRawRef } from "./email/parse";
 import { ackTemplate } from "./email/templates";
@@ -25,16 +25,17 @@ export interface InboundOutput {
 export class InboundEmailWorkflow extends WorkflowEntrypoint<Env, InboundParams> {
   async run(event: WorkflowEvent<InboundParams>, step: WorkflowStep): Promise<InboundOutput> {
     const p = event.payload;
-    const repo = createRepo(this.env);
 
     const meta = await step.do("parse", () => parseAndStore(this.env.MAIL, p));
 
-    const persisted = await step.do("persist", async () => {
-      const mailbox = await repo.getMailboxByAddress(p.mailboxAddress);
-      if (!mailbox) throw new Error(`mailbox ${p.mailboxAddress} not found`);
-      const r = await ingestInbound(repo, mailbox, meta, p.guard);
-      return { mailbox, ticket: r.ticket, created: r.created, messageId: r.messageId, threadedBy: r.threadedBy };
-    });
+    const persisted = await step.do("persist", () =>
+      withRepo(this.env, async (repo) => {
+        const mailbox = await repo.getMailboxByAddress(p.mailboxAddress);
+        if (!mailbox) throw new Error(`mailbox ${p.mailboxAddress} not found`);
+        const r = await ingestInbound(repo, mailbox, meta, p.guard);
+        return { mailbox, ticket: r.ticket, created: r.created, messageId: r.messageId, threadedBy: r.threadedBy };
+      }),
+    );
     const { mailbox, ticket } = persisted;
 
     let acked = false;
@@ -67,8 +68,8 @@ export class InboundEmailWorkflow extends WorkflowEntrypoint<Env, InboundParams>
         },
       );
       // Separate step so a DB hiccup here never re-sends the email (step results are cached).
-      await step.do("ack:record", async () => {
-        await repo.appendMessage({
+      await step.do("ack:record", () =>
+        withRepo(this.env, (repo) => repo.appendMessage({
           ticket,
           reopen: false,
           actor: "system:ack",
@@ -91,8 +92,8 @@ export class InboundEmailWorkflow extends WorkflowEntrypoint<Env, InboundParams>
             auth_json: null,
             author_agent_id: null,
           },
-        });
-      });
+        })),
+      );
       acked = true;
     }
 
@@ -100,7 +101,7 @@ export class InboundEmailWorkflow extends WorkflowEntrypoint<Env, InboundParams>
       config,
       step,
       { event: persisted.created ? "ticket.created" : "message.received", ticket, mailbox, message: meta, env: this.env },
-      (plugin, error) => repo.addEvent(ticket.id, "plugin.failed", `plugin:${plugin}`, { error }),
+      (plugin, error) => withRepo(this.env, (repo) => repo.addEvent(ticket.id, "plugin.failed", `plugin:${plugin}`, { error })),
     );
 
     return { ticketRef: ticket.ref, ticketId: ticket.id, created: persisted.created, threadedBy: persisted.threadedBy, acked: acked || p.ack === "handled" };

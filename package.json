@@ -2,7 +2,7 @@
   "name": "cf-helpdesk",
   "private": true,
   "version": "0.0.0",
-  "description": "Open-source help desk / ticketing on Cloudflare: Email Routing → Workflows → tickets",
+  "description": "Open-source help desk / ticketing on Cloudflare: Email Routing \u2192 Workflows \u2192 tickets",
   "license": "MIT",
   "workspaces": [
     "packages/*",
@@ -12,7 +12,9 @@
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev": "npm run dev -w apps/worker",
-    "deploy": "npm run deploy -w apps/worker"
+    "deploy": "npm run deploy -w apps/worker",
+    "db:generate": "npm run generate -w packages/db",
+    "db:migrate": "npm run migrate -w packages/db --"
   },
   "engines": {
     "node": ">=20"

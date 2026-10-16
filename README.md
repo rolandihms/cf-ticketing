@@ -18,16 +18,16 @@ Email arrives at `support@yourdomain.com` and Cloudflare Email Routing hands it 
 - **Cloudflare Workers + Email Routing** for inbound mail; the `addresses` key in `wrangler.jsonc` creates the routing rule on deploy.
 - **Cloudflare Workflows** for retries, idempotency and long-running extensions.
 - **Email Service (Email Sending)** for acknowledgements and replies to any recipient. Workers Paid is required, and the product is in beta. There is a fallback, `ACK_MODE=reply`, for the Free plan.
-- **D1** as the default database, accessed through **Kysely**. Postgres, MySQL and PlanetScale via Hyperdrive or HTTP drivers are planned for Phase 2.
+- **D1** as the default database, or **Postgres / MySQL / PlanetScale** through Hyperdrive or HTTP drivers. One schema is defined in Kysely and compiled to SQL for each backend; see [docs/DATABASE.md](docs/DATABASE.md).
 - **R2** for raw emails, bodies and attachments.
 
 ## Layout
 
 ```
 packages/core     runtime-agnostic logic: guards, threading, refs, ingest keys, plugin API
+packages/db       portable schema + generated SQL (sqlite/postgres/mysql), repos, migrate CLI
 apps/worker       the deployable Worker (email handler, Workflow, REST API, D1 repo)
   helpdesk.config.ts   ← your plugins and settings
-  migrations/          D1 SQL migrations
 docs/             plan, spikes, design notes
 ```
 
@@ -37,7 +37,7 @@ docs/             plan, spikes, design notes
 npm install
 cd apps/worker
 cp .dev.vars.example .dev.vars
-npx wrangler d1 migrations apply DB --local
+npx wrangler d1 migrations apply DB --local   # uses packages/db/migrations/sqlite
 npx wrangler dev
 ```
 
