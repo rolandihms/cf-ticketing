@@ -25,6 +25,7 @@ Email arrives at `support@yourdomain.com` and Cloudflare Email Routing hands it 
 
 ```
 packages/core     runtime-agnostic logic: guards, threading, refs, ingest keys, plugin API
+packages/plugins  optional integrations: GitHub issues, signed webhooks (docs/INTEGRATIONS.md)
 packages/db       portable schema + generated SQL (sqlite/postgres/mysql), repos, migrate CLI
 apps/worker       the deployable Worker (email handler, Workflow, REST API, D1 repo)
   helpdesk.config.ts   ← your plugins and settings

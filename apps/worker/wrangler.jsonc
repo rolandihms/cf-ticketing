@@ -58,6 +58,11 @@
     "DEFAULT_REF_PREFIX": "TKT",
     // Workers AI model for classification (must support JSON mode) and optional AI Gateway id.
     "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-    "AI_GATEWAY_ID": ""
+    "AI_GATEWAY_ID": "",
+    // Optional integrations (empty = off). Secrets: `wrangler secret put GITHUB_TOKEN` / `WEBHOOK_SECRET`.
+    // GitHub issues for code-related bug tickets, e.g. "your-org/your-app" (private repos only by default).
+    "GITHUB_REPO": "",
+    // Signed webhook to another system on github.issue.created / ticket.classified, e.g. "https://ops.example/hooks".
+    "WEBHOOK_URL": ""
   }
 }

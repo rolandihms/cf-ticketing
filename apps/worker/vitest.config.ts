@@ -9,7 +9,17 @@ export default defineConfig(async () => {
         wrangler: { configPath: "./wrangler.jsonc" },
         // Never reach real Cloudflare services (Workers AI) from tests; LLM steps are mocked.
         remoteBindings: false,
-        miniflare: { bindings: { TEST_MIGRATIONS: migrations, API_TOKEN: "test-token" } },
+        miniflare: {
+          bindings: {
+            TEST_MIGRATIONS: migrations,
+            API_TOKEN: "test-token",
+            // Integrations on, pointed at fakes (globalThis.fetch is stubbed in tests).
+            GITHUB_REPO: "acme/app",
+            GITHUB_TOKEN: "test-gh-token",
+            WEBHOOK_URL: "https://hooks.test/helpdesk",
+            WEBHOOK_SECRET: "test-webhook-secret",
+          },
+        },
       }),
     ],
     test: { setupFiles: ["./test/setup.ts"] },

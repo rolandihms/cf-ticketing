@@ -153,6 +153,16 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
       expect((await repo.getTicket(ticket.id))!.priority).toBe("high");
     });
 
+    it("saves external links once per (ticket, provider)", async () => {
+      const c = await repo.upsertContact("jane@cust.example", null);
+      const { ticket } = await repo.createTicketWithFirstMessage({ mailbox, requesterId: c.id, subject: "a", sourceIngestKey: key(1), message: inbound(key(1)), attachments: [] });
+      expect(await repo.getLink(ticket.id, "github")).toBeNull();
+      const first = await repo.saveLink(ticket.id, { provider: "github", externalId: "acme/app#7", url: "https://github.com/acme/app/issues/7", state: "open", data: { number: 7 } });
+      const second = await repo.saveLink(ticket.id, { provider: "github", externalId: "acme/app#8", url: null, state: "open" });
+      expect(second).toEqual(first);
+      expect(first).toMatchObject({ externalId: "acme/app#7", data: { number: 7 } });
+    });
+
     it("lists tickets with cursor pagination", async () => {
       const c = await repo.upsertContact("jane@cust.example", null);
       for (let i = 1; i <= 3; i++) {
