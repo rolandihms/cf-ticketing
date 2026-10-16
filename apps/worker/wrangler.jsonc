@@ -9,6 +9,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
+  // Database driver compiled into the bundle: "d1" | "postgres" | "mysql" | "planetscale" | "all".
+  // Unused drivers are dropped at build time (pg + mysql2 + PlanetScale ≈ 1.4 MB). See docs/DATABASE.md.
+  "define": { "__HELPDESK_DB_DRIVER__": "\"d1\"" },
+
   // Inbound addresses routed to this Worker. `wrangler deploy` creates the Email Routing rules.
   // Top-level only (cannot be set per env). Uncomment after running setup:
   // "addresses": ["support@example.com"],
@@ -38,7 +42,7 @@
   // "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<hyperdrive-id>", "localConnectionString": "postgres://..." }],
 
   "vars": {
-    // d1 | postgres | mysql | planetscale
+    // Optional runtime override; must match the build-time driver above unless that is "all".
     "DB_DRIVER": "d1",
     // "send": acknowledge via Email Sending (Workers Paid, any recipient).
     // "reply": acknowledge via message.reply() in the email handler (Free plan, DMARC-passing senders only).
