@@ -48,6 +48,12 @@ describe("rules classifier", () => {
     expect(r).toMatchObject({ category: "bug", codeRelated: true, priority: "high" });
     expect((await rules.classify(input("Down", "The site returns 502 Bad Gateway"), { env: {} }))?.category).toBe("bug");
   });
+  it("treats billing/account keywords as hints below acceptAt, so the LLM decides", async () => {
+    const hint = await rules.classify(input("Invoice PDF download returns a blank file", "every invoice downloads as 0 bytes"), { env: {} });
+    expect(hint).toMatchObject({ category: "billing" });
+    expect(hint!.confidence).toBeLessThan(snap.acceptAt);
+  });
+
   it("detects billing and account, abstains otherwise", async () => {
     expect((await rules.classify(input("Refund please", "I was charged twice"), { env: {} }))?.category).toBe("billing");
     expect((await rules.classify(input("Help", "I can't log in"), { env: {} }))?.category).toBe("account");

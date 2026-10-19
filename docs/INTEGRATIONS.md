@@ -57,6 +57,16 @@ githubIssues<Env>({
 - Phase B: an approval mode, where an agent approves before posting (required for public repos), and GitHub App auth.
 - Phase C: a GitHub webhook back to the help desk when the issue is closed.
 
+### Live test (2026-10-19, ihms.dev → private `rolandihms/cf-helpdesk-test-issues`)
+
+| Email | Classification | Result |
+|---|---|---|
+| "Dashboard charts stay empty after the latest release" | `bug` 0.9, code-related (LLM) | Issue #1 opened with the `from-helpdesk` label. `ticket_links` row and `github.issue.created` event recorded. |
+| "Invoice PDF download returns a blank file" (before the rules fix) | `billing` 0.8 (keyword rule) | No issue. The "invoice" keyword short-circuited the LLM. |
+| Same email, after the rules fix | rules hint `billing` 0.6 (not accepted) → LLM `bug` 0.9 | Issue #2 opened. |
+
+The issue body contained only the AI summary and the extracted details (component, steps, expected, actual). There were no customer names, addresses or links. The fine-grained PAT with **Issues: read & write** on that single repo was enough for every call: label creation, `/user`, the repo visibility check, issue listing and issue creation.
+
 ## 2. Triggering another system: webhooks
 
 The `webhooks` plugin POSTs a **signed JSON payload** to any URL whenever a matching event happens.
