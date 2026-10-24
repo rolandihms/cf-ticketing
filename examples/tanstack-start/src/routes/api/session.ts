@@ -1,4 +1,6 @@
 // Demo sign-in: sets the cookie identityFromRequest reads. Replace with your app's auth.
+// Deliberately minimal: no Secure flag (works on http://localhost) and no CSRF check, because
+// anyone may pick any demo user anyway. Your real session needs both.
 import { createFileRoute } from "@tanstack/react-router";
 import { COOKIE, DEMO_USERS, identityFromRequest } from "../../lib/identity";
 

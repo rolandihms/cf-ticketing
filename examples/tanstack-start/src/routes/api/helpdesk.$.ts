@@ -17,5 +17,5 @@ async function proxy({ request }: { request: Request }) {
 }
 
 export const Route = createFileRoute("/api/helpdesk/$")({
-  server: { handlers: { GET: proxy, POST: proxy, PATCH: proxy } },
+  server: { handlers: { GET: proxy, HEAD: proxy, POST: proxy, PATCH: proxy } },
 });

@@ -21,6 +21,8 @@ export function trustedHeaders(serviceKey: string, identity: HostIdentity): Reco
 
 /** Headers a browser must never be able to set (or leak) on the forwarded request. */
 const STRIP = /^(x-helpdesk-|cf-access-|cookie$|authorization$)/i;
+/** Hop-by-hop and length headers: they describe the incoming connection, not the forwarded request. */
+const HOP = /^(host|connection|keep-alive|proxy-.*|te|trailer|transfer-encoding|upgrade|content-length)$/i;
 
 export interface ForwardOptions {
   /** The help desk: a service binding (recommended) or its base URL. */
@@ -50,10 +52,11 @@ export async function forwardToHelpdesk(request: Request, opts: ForwardOptions):
 
   const headers = new Headers();
   request.headers.forEach((v, k) => {
-    if (!STRIP.test(k) && k !== "host") headers.set(k, v);
+    if (!STRIP.test(k) && !HOP.test(k)) headers.set(k, v);
   });
   for (const [k, v] of Object.entries(trustedHeaders(opts.serviceKey, opts.identity))) headers.set(k, v);
 
+  // Buffered: bodies are small JSON today. Stream (body + duplex: "half") if uploads go through here.
   const hasBody = !["GET", "HEAD"].includes(request.method);
   const forwarded = new Request(target, { method: request.method, headers, body: hasBody ? await request.arrayBuffer() : undefined, redirect: "manual" });
   const res = typeof opts.target === "string" ? await fetch(forwarded) : await opts.target.fetch(forwarded);

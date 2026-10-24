@@ -88,7 +88,8 @@ function TicketPage() {
         ))}
       </ol>
 
-      <Compose ticketRef={ref} onDone={refresh} />
+      {/* key: a draft and its idempotency key never carry over to another ticket */}
+      <Compose key={ref} ticketRef={ref} onDone={refresh} />
 
       <details>
         <summary>History ({events.length})</summary>

@@ -46,6 +46,7 @@ describe("forwardToHelpdesk", () => {
         "x-helpdesk-principal": '{"role":"admin","partition":null}',
         "x-helpdesk-service-key": "guess",
         "cf-access-jwt-assertion": "jwt",
+        connection: "keep-alive",
       },
       body: '{"text":"hi"}',
     });
@@ -54,7 +55,7 @@ describe("forwardToHelpdesk", () => {
     expect(out.url).toBe("https://helpdesk.internal/api/tickets/ACME-1/notes?x=1");
     expect(out.headers.get("x-helpdesk-service-key")).toBe("svc");
     expect(JSON.parse(out.headers.get("x-helpdesk-principal")!)).toEqual(identity);
-    for (const h of ["cookie", "authorization", "cf-access-jwt-assertion"]) expect(out.headers.get(h)).toBeNull();
+    for (const h of ["cookie", "authorization", "cf-access-jwt-assertion", "connection"]) expect(out.headers.get(h)).toBeNull();
     expect(await out.text()).toBe('{"text":"hi"}');
     expect(res.headers.get("set-cookie")).toBeNull();
     expect(res.headers.get("x-other")).toBe("y");

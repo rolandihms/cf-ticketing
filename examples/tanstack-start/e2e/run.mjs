@@ -24,7 +24,10 @@ const TOKEN = "e2e-token";
 // The app's service key comes from its .dev.vars (created from the example if missing); the help desk gets the same.
 const devVars = join(app, ".dev.vars");
 if (!existsSync(devVars)) writeFileSync(devVars, readFileSync(join(app, ".dev.vars.example"), "utf8"));
-const serviceKey = readFileSync(devVars, "utf8").match(/^HELPDESK_SERVICE_KEY=(.*)$/m)?.[1]?.trim();
+const serviceKey = readFileSync(devVars, "utf8")
+  .match(/^HELPDESK_SERVICE_KEY=(.*)$/m)?.[1]
+  ?.trim()
+  .replace(/^(["'])(.*)\1$/, "$2"); // dotenv-style quotes
 if (!serviceKey) throw new Error(`HELPDESK_SERVICE_KEY missing in ${devVars}`);
 
 const children = [];
@@ -49,9 +52,16 @@ const waitFor = async (url, what) => {
   throw new Error(`${what} did not start (${url})`);
 };
 
+const portFree = async (url, what) => {
+  const busy = await fetch(url).then(() => true, () => false);
+  if (busy) throw new Error(`${url} is already in use; stop the other ${what} first`);
+};
+
 let browser;
 let failed = false;
 try {
+  await portFree(HD, "help desk (wrangler dev)");
+  await portFree(APP, "app (vite dev)");
   // ---- help desk Worker, local only (remote bindings like Workers AI are off; classification falls back) ----
   await run(bin("wrangler"), ["d1", "migrations", "apply", "DB", "--local", "--persist-to", join(tmp, "state")], worker);
   await run(
@@ -142,6 +152,7 @@ try {
   for (const c of children) console.error(`\n---- ${c.logName} log (tail) ----\n${c.log().slice(-4000)}`);
 } finally {
   await browser?.close();
-  for (const c of children) c.p.kill();
+  // Wait for the servers (and their workerd children) to exit, so CI never leaves them running.
+  await Promise.all(children.map((c) => (c.p.exitCode === null ? new Promise((r) => (c.p.once("close", r), c.p.kill("SIGTERM"), setTimeout(() => (c.p.kill("SIGKILL"), r()), 5000))) : null)));
   process.exit(failed ? 1 : 0);
 }

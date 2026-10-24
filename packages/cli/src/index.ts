@@ -220,7 +220,8 @@ async function init(argv: string[]) {
     },
   });
   if (f.help) return console.log(HELP);
-  const cwd = resolve(f.cwd ?? process.cwd());
+  // npm runs workspace scripts inside packages/cli; INIT_CWD is where the user actually ran the command.
+  const cwd = resolve(process.env.INIT_CWD ?? process.cwd(), f.cwd ?? ".");
   const db = (f.db ?? "planetscale") as InitDb;
   try {
     if (!["d1", "postgres", "mysql", "planetscale"].includes(db)) throw new InitError("--db must be d1, postgres, mysql or planetscale");
@@ -237,6 +238,7 @@ async function init(argv: string[]) {
       ...(f["model-prefix"] ? { modelPrefix: f["model-prefix"] } : {}),
       deps: depsKind === "file" ? { kind: "file", packagesDir } : { kind: "npm", version: ownVersion },
       templatePath: join(workerDir, "wrangler.jsonc"),
+      cliCommand: depsKind === "file" ? `npm --prefix ${repoRoot} run cli --` : "npx cf-helpdesk",
       force: f.force,
     });
     const report = await writeInit(cwd, plan.files, f.force);

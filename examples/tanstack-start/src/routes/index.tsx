@@ -16,7 +16,7 @@ const VIEWS: Record<View, { label: string; filter: TicketFilter }> = {
 
 export const Route = createFileRoute("/")({
   validateSearch: (s: Record<string, unknown>): { view?: View; q?: string } => ({
-    ...((s.view as View) in VIEWS ? { view: s.view as View } : {}),
+    ...(typeof s.view === "string" && Object.hasOwn(VIEWS, s.view) ? { view: s.view as View } : {}),
     ...(typeof s.q === "string" && s.q ? { q: s.q } : {}),
   }),
   component: Inbox,
