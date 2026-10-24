@@ -29,7 +29,8 @@ export interface TicketServices {
 
 /**
  * A domain event delivered to `onEvent`. Built-in types: ticket.created, message.received,
- * ticket.classified. Plugins add their own via `ctx.emit` (e.g. github.issue.created).
+ * ticket.classified, and the agent actions in AGENT_EVENTS. Plugins add their own via `ctx.emit`
+ * (e.g. github.issue.created).
  */
 export interface HelpdeskEvent {
   /** Deterministic per ticket Workflow run; use it to dedupe deliveries. */
@@ -42,6 +43,19 @@ export interface HelpdeskEvent {
 }
 
 export type BuiltinEvent = "ticket.created" | "message.received" | "ticket.classified";
+
+/** Events raised by agent actions through the API; delivered to `onEvent` only. */
+export const AGENT_EVENTS = ["ticket.status_changed", "ticket.priority_changed", "ticket.assigned", "ticket.replied", "ticket.note_added"] as const;
+export type AgentEvent = (typeof AGENT_EVENTS)[number];
+
+/** Context for `onEvent`. Events from agent actions have no inbound email (`message` is absent). */
+export interface EventContext<Env = unknown> extends Omit<HookContext<Env>, "event" | "message"> {
+  /** What triggered this delivery: a built-in inbound event, or "agent.action" for API actions. */
+  event: BuiltinEvent | "agent.action";
+  /** The inbound email, when the event came from one. */
+  message?: InboundMessageMeta;
+  helpdeskEvent: HelpdeskEvent;
+}
 
 export interface HookContext<Env = unknown> {
   event: BuiltinEvent;
@@ -67,8 +81,8 @@ export interface HelpdeskPlugin<Env = unknown> {
   onMessageReceived?(ctx: HookContext<Env>): Promise<void>;
   /** After classification is persisted; `ctx.classification` is set. Route on it (e.g. GitHub issues). */
   onTicketClassified?(ctx: HookContext<Env> & { classification: ClassificationOutcome }): Promise<void>;
-  /** Every built-in and plugin-emitted event (except the plugin's own). Good for fan-out (webhooks). */
-  onEvent?(ctx: HookContext<Env> & { helpdeskEvent: HelpdeskEvent }): Promise<void>;
+  /** Every built-in, agent-action and plugin-emitted event (except the plugin's own). Good for fan-out (webhooks). */
+  onEvent?(ctx: EventContext<Env>): Promise<void>;
 }
 
 export interface HelpdeskConfig<Env = unknown> {

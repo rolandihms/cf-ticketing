@@ -1,23 +1,26 @@
 import {
   type BuiltinEvent,
   EVENT_TYPE_RE,
+  type EventContext,
   type HelpdeskConfig,
   type HelpdeskEvent,
   type HelpdeskPlugin,
   type HookContext,
+  type InboundMessageMeta,
   type PluginStep,
   type TicketServices,
 } from "@cf-helpdesk/core";
 import type { WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 
-type Base<Env> = Omit<HookContext<Env>, "event" | "step" | "log" | "emit" | "services">;
+type Base<Env> = Omit<HookContext<Env>, "event" | "step" | "log" | "emit" | "services" | "message"> & { message?: InboundMessageMeta };
+type Trigger = BuiltinEvent | "agent.action";
 
 /** Safety valve against plugins emitting events in a loop. */
 const MAX_EVENTS_PER_RUN = 50;
 
 /**
- * Runs plugin hooks inside the inbound Workflow and delivers events between plugins.
+ * Runs plugin hooks inside a Workflow and delivers events between plugins.
  *
  * - Each hook gets a namespaced step wrapper: step names are Workflow cache keys, so they are
  *   prefixed `plugin:<name>:<event>:` (or `plugin:<name>:on:<seq>:` for onEvent) to avoid collisions.
@@ -30,25 +33,37 @@ export class PluginRunner<Env> {
   private seq = 0;
   private readonly queue: HelpdeskEvent[] = [];
 
+  /**
+   * @param runKey unique per Workflow run (a prefix of the inbound ingest key, or the agent action id);
+   *   part of every event id, so ids are stable across replays and distinct between runs.
+   */
   constructor(
     private readonly config: HelpdeskConfig<Env>,
     private readonly step: WorkflowStep,
     private readonly servicesFor: (actor: string) => TicketServices,
     private readonly base: Base<Env>,
     private readonly onFailure: (plugin: string, error: string) => Promise<void>,
+    private readonly runKey: string,
   ) {}
 
   /** Run the named hook for a built-in event, then deliver it (and anything emitted) via onEvent. */
   async dispatch(event: BuiltinEvent) {
+    if (!this.base.message) throw new Error(`${event} needs the inbound message`);
     // Queue the built-in event first so subscribers see it before anything the hooks emit.
     this.queue.push(this.builtinEvent(event));
     for (const plugin of this.config.plugins) {
       const hook = (
         event === "ticket.created" ? plugin.onTicketCreated : event === "message.received" ? plugin.onMessageReceived : plugin.onTicketClassified
       ) as ((ctx: HookContext<Env>) => Promise<void>) | undefined;
-      if (hook) await this.run(plugin, event, `plugin:${plugin.name}:${event}:`, (ctx) => hook.call(plugin, ctx));
+      if (hook) await this.run(plugin, event, `plugin:${plugin.name}:${event}:`, (ctx) => hook.call(plugin, ctx as HookContext<Env>));
     }
     await this.drain(event);
+  }
+
+  /** Deliver events raised outside the Workflow (agent actions) to every plugin's onEvent. */
+  async deliver(events: Omit<HelpdeskEvent, "id">[]) {
+    for (const ev of events) this.queue.push({ ...ev, id: this.nextId(ev.type) });
+    await this.drain("agent.action");
   }
 
   private builtinEvent(type: BuiltinEvent): HelpdeskEvent {
@@ -67,11 +82,10 @@ export class PluginRunner<Env> {
   }
 
   private nextId(type: string) {
-    // ingestKey is unique per Workflow run (one inbound email), seq is deterministic within it.
-    return `${this.base.ticket.ref}:${this.base.message.ingestKey.slice(0, 12)}:${++this.seq}:${type}`;
+    return `${this.base.ticket.ref}:${this.runKey}:${++this.seq}:${type}`;
   }
 
-  private async drain(event: BuiltinEvent) {
+  private async drain(trigger: Trigger) {
     let delivered = 0;
     while (this.queue.length) {
       const ev = this.queue.shift()!;
@@ -82,12 +96,12 @@ export class PluginRunner<Env> {
       for (const plugin of this.config.plugins) {
         if (!plugin.onEvent || plugin.name === ev.source) continue;
         const seq = ev.id.split(":")[2];
-        await this.run(plugin, event, `plugin:${plugin.name}:on:${seq}:`, (ctx) => plugin.onEvent!.call(plugin, { ...ctx, helpdeskEvent: ev }));
+        await this.run(plugin, trigger, `plugin:${plugin.name}:on:${seq}:`, (ctx) => plugin.onEvent!.call(plugin, { ...ctx, helpdeskEvent: ev }));
       }
     }
   }
 
-  private async run(plugin: HelpdeskPlugin<Env>, event: BuiltinEvent, prefix: string, invoke: (ctx: HookContext<Env>) => Promise<void>) {
+  private async run(plugin: HelpdeskPlugin<Env>, event: Trigger, prefix: string, invoke: (ctx: Omit<EventContext<Env>, "helpdeskEvent">) => Promise<void>) {
     const step = this.step;
     const services = this.servicesFor(`plugin:${plugin.name}`);
     // Errors carrying an HTTP `status` of 4xx (except 408/429) won't succeed on retry: fail fast.

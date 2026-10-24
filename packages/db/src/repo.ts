@@ -5,7 +5,7 @@ import { monotonicFactory } from "ulidx";
 // Monotonic: ids created in the same millisecond still sort in creation order.
 const ulid = monotonicFactory();
 import { toD1Statement } from "./d1-dialect";
-import type { AgentsTable, Database, MailboxesTable, MessagesTable, TicketClassificationsTable, TicketEventsTable, TicketsTable } from "./schema";
+import type { AgentsTable, AttachmentsTable, Database, MailboxesTable, MessagesTable, TicketClassificationsTable, TicketEventsTable, TicketsTable } from "./schema";
 import type { SqlDialect } from "./types";
 
 export type NewMessage = Omit<MessagesTable, "id" | "ticket_id" | "mailbox_id" | "created_at">;
@@ -27,6 +27,8 @@ export interface TicketDetail {
   ticket: Ticket;
   requester: Contact | null;
   messages: MessagesTable[];
+  /** Attachments of all messages (r2_key is internal; download through the API). */
+  attachments: AttachmentsTable[];
   events: TicketEventsTable[];
   classifications: TicketClassificationsTable[];
 }
@@ -147,6 +149,7 @@ export interface HelpdeskRepo {
   getThreading(ticketId: string): Promise<{ inReplyTo: string | null; references: string[]; lastCustomerEmail: string | null }>;
   findMessageByIngestKey(key: string): Promise<MessagesTable | null>;
   getMessage(id: string): Promise<MessagesTable | null>;
+  getAttachment(id: string): Promise<AttachmentsTable | null>;
   /** Release connections (no-op for D1). Call when the request/step is done. */
   close(): Promise<void>;
 }
@@ -312,8 +315,16 @@ export class SqlRepo implements HelpdeskRepo {
   async getTicketDetail(ref: string): Promise<TicketDetail | null> {
     const ticket = await this.findTicketByRef(ref);
     if (!ticket) return null;
-    const [messages, events, classifications, requester] = await Promise.all([
+    const [messages, attachments, events, classifications, requester] = await Promise.all([
       this.db.selectFrom("messages").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").orderBy("id").execute(),
+      this.db
+        .selectFrom("attachments")
+        .innerJoin("messages", "messages.id", "attachments.message_id")
+        .selectAll("attachments")
+        .where("messages.ticket_id", "=", ticket.id)
+        .orderBy("attachments.created_at")
+        .orderBy("attachments.id")
+        .execute(),
       this.db.selectFrom("ticket_events").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").orderBy("id").execute(),
       this.db.selectFrom("ticket_classifications").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").orderBy("id").execute(),
       this.getContact(ticket.requesterId),
@@ -322,6 +333,7 @@ export class SqlRepo implements HelpdeskRepo {
       ticket,
       requester,
       messages: messages.map(normaliseRow),
+      attachments: attachments.map((a) => ({ ...normaliseRow(a), size: Number(a.size) })),
       events: events.map(normaliseRow),
       classifications: classifications.map(normaliseRow),
     };
@@ -622,6 +634,11 @@ export class SqlRepo implements HelpdeskRepo {
 
   async getMessage(id: string) {
     return (await this.db.selectFrom("messages").selectAll().where("id", "=", id).executeTakeFirst()) ?? null;
+  }
+
+  async getAttachment(id: string) {
+    const r = await this.db.selectFrom("attachments").selectAll().where("id", "=", id).executeTakeFirst();
+    return r ? { ...normaliseRow(r), size: Number(r.size) } : null;
   }
 
   /** Run writes atomically: a transaction here, a batch in D1Repo. */

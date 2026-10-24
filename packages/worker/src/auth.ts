@@ -7,6 +7,47 @@ export interface Principal {
   /** Recorded on ticket events, e.g. "agent:01H…" or "api". */
   actor: string;
   agent?: Agent;
+  /** The only partition this caller may see, or null for every partition. */
+  partition: string | null;
+  /** How the caller signed in. */
+  via: "token" | "access" | "trusted";
+}
+
+// ---------------------------------------------------------------------------------------------
+// Trusted principal (docs/EMBEDDING.md): a host app that already authenticated its user calls the
+// help desk over a service binding with X-Helpdesk-Service-Key and this identity header.
+// ---------------------------------------------------------------------------------------------
+
+export interface TrustedIdentity {
+  /** The host's user id. */
+  externalId: string;
+  email: string;
+  name: string;
+  role: AgentRole;
+  /** Required, so "every partition" is never the accidental default: null = unrestricted. */
+  partition: string | null;
+}
+
+const ID_RE = /^[\x21-\x7e]{1,128}$/;
+
+/** Parse and validate the X-Helpdesk-Principal header (JSON). Returns an error message on bad input. */
+export function parseTrustedIdentity(header: string | undefined): TrustedIdentity | string {
+  if (!header) return "X-Helpdesk-Principal is required";
+  let v: Record<string, unknown>;
+  try {
+    v = JSON.parse(header);
+    if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error();
+  } catch {
+    return "X-Helpdesk-Principal must be a JSON object";
+  }
+  const { externalId, email, name, role, partition } = v;
+  if (typeof externalId !== "string" || !ID_RE.test(externalId)) return "externalId: 1-128 printable ASCII characters";
+  if (typeof email !== "string" || email.length > 320 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return "email is invalid";
+  if (name !== undefined && (typeof name !== "string" || name.length > 255)) return "name: a string up to 255 characters";
+  if (role !== "admin" && role !== "agent") return 'role must be "admin" or "agent"';
+  if (!("partition" in v)) return "partition is required (a string, or null for every partition)";
+  if (partition !== null && (typeof partition !== "string" || !ID_RE.test(partition))) return "partition: null or 1-128 printable ASCII characters";
+  return { externalId, email: email.toLowerCase(), name: (name as string | undefined)?.trim() || email.split("@")[0]!, role, partition: partition as string | null };
 }
 
 const enc = new TextEncoder();

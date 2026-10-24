@@ -1,4 +1,4 @@
-import { normalizeMessageId, type GuardResult } from "@cf-helpdesk/core";
+import { type GuardResult, type HelpdeskEvent, normalizeMessageId } from "@cf-helpdesk/core";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import type { HelpdeskEnv } from "./env";
 import type { HelpdeskOptions } from "./options";
@@ -113,9 +113,54 @@ export async function runInbound(config: HelpdeskOptions, env: HelpdeskEnv, even
   const onFailure = (plugin: string, error: string) =>
     withRepo(env, (repo) => repo.addEvent(ticket.id, "plugin.failed", `plugin:${plugin}`, { error }));
   const base = { ticket, mailbox, message: meta, env: env, ...(classified ? { classification: classified.outcome } : {}) };
-  const runner = new PluginRunner(config, step, (actor) => ticketServices(env, ticket.id, actor), base, onFailure);
+  const runner = new PluginRunner(config, step, (actor) => ticketServices(env, ticket.id, actor), base, onFailure, meta.ingestKey.slice(0, 12));
   await runner.dispatch(persisted.created ? "ticket.created" : "message.received");
   if (classified) await runner.dispatch("ticket.classified");
 
   return { ticketRef: ticket.ref, ticketId: ticket.id, created: persisted.created, threadedBy: persisted.threadedBy, acked: acked || p.ack === "handled", ...(classified ? { category: classified.outcome.category } : {}) };
+}
+
+/** Agent actions (API) whose events are delivered to plugins' onEvent, durably and with retries. */
+export interface AgentEventsParams {
+  kind: "agent-events";
+  /** Unique per API action; part of every event id. */
+  actionId: string;
+  ticketId: string;
+  events: Omit<HelpdeskEvent, "id">[];
+}
+
+export type HelpdeskWorkflowParams = InboundParams | AgentEventsParams;
+
+export const isAgentEvents = (p: Readonly<HelpdeskWorkflowParams>): p is Readonly<AgentEventsParams> => (p as AgentEventsParams).kind === "agent-events";
+
+export async function runAgentEvents(config: HelpdeskOptions, env: HelpdeskEnv, event: WorkflowEvent<AgentEventsParams>, step: WorkflowStep) {
+  const p = event.payload;
+  const loaded = await step.do("load", () =>
+    withRepo(env, async (repo) => {
+      const ticket = await repo.getTicket(p.ticketId);
+      const mailbox = ticket ? ((await repo.listMailboxes()).find((m) => m.id === ticket.mailboxId) ?? null) : null;
+      return ticket && mailbox ? { ticket, mailbox } : null;
+    }),
+  );
+  if (!loaded) return { delivered: 0 };
+  const { ticket, mailbox } = loaded;
+  const onFailure = (plugin: string, error: string) => withRepo(env, (repo) => repo.addEvent(ticket.id, "plugin.failed", `plugin:${plugin}`, { error }));
+  const runner = new PluginRunner(config, step, (actor) => ticketServices(env, ticket.id, actor), { ticket, mailbox, env }, onFailure, p.actionId);
+  await runner.deliver(p.events);
+  return { delivered: p.events.length };
+}
+
+/**
+ * Hand agent-action events to the Workflow (only if a plugin listens). Called after the action is
+ * committed; a failure here is logged, never surfaced: the action itself succeeded and is recorded
+ * in ticket_events either way.
+ */
+export async function queueAgentEvents(config: HelpdeskOptions, env: HelpdeskEnv, ticketId: string, events: AgentEventsParams["events"]) {
+  if (!events.length || !config.plugins.some((pl) => pl.onEvent)) return;
+  const actionId = crypto.randomUUID().replace(/-/g, "");
+  try {
+    await env.INBOUND_WORKFLOW.create({ id: `act-${actionId}`, params: { kind: "agent-events", actionId, ticketId, events } satisfies AgentEventsParams });
+  } catch (err) {
+    console.error(JSON.stringify({ msg: "could not queue agent events", ticketId, types: events.map((e) => e.type), error: String(err) }));
+  }
 }

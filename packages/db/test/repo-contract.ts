@@ -122,6 +122,9 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
       expect(typeof detail.messages[0]!.created_at).toBe("number");
       expect(detail.events.map((e) => e.type)).toEqual(["ticket.created", "message.inbound"]);
       expect(detail.requester?.email).toBe("jane@cust.example");
+      expect(detail.attachments).toEqual([expect.objectContaining({ message_id: detail.messages[0]!.id, filename: "a.png", mime_type: "image/png", size: 10 })]);
+      expect(await repo.getAttachment(detail.attachments[0]!.id)).toEqual(detail.attachments[0]);
+      expect(await repo.getAttachment("nope")).toBeNull();
     });
 
     it("saves classifications atomically and idempotently", async () => {
