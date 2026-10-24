@@ -4,7 +4,8 @@ import { withTablePrefix } from "./prefix";
 import type { SqlDialect } from "./types";
 
 /** Bookkeeping table; gets the table prefix like every other table ("hd_" → hd__helpdesk_migrations). */
-const TABLE = "_helpdesk_migrations";
+export const MIGRATIONS_TABLE = "_helpdesk_migrations";
+const TABLE = MIGRATIONS_TABLE;
 
 /**
  * Apply pending migrations for Postgres/MySQL (D1 uses `wrangler d1 migrations apply` with the same
