@@ -12,6 +12,7 @@ export const ticket = {
   assigneeId: null,
   createdAt: 1,
   updatedAt: 2,
+  partition: null,
   category: "bug",
   categoryConfidence: 0.9,
   codeRelated: true,
@@ -37,7 +38,7 @@ export function fakeCtx<Env>(env: Env, extra: Partial<HookContext<Env>> = {}) {
   const ctx = {
     event: "ticket.classified" as const,
     ticket,
-    mailbox: { id: "mb", address: "support@ihms.dev", name: "IHMS", refPrefix: "IHMS", fromName: null },
+    mailbox: { id: "mb", address: "support@ihms.dev", name: "IHMS", refPrefix: "IHMS", fromName: null, partition: null },
     message: { ingestKey: "k".repeat(64) } as HookContext["message"],
     env,
     log: () => {},

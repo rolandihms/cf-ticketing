@@ -7,6 +7,7 @@ export interface MailboxesTable {
   from_name: string | null;
   settings_json: string | null;
   created_at: number;
+  partition_key: string | null;
 }
 
 export interface ContactsTable {
@@ -23,6 +24,8 @@ export interface AgentsTable {
   role: string;
   active: number;
   created_at: number;
+  partition_key: string | null;
+  external_id: string | null;
 }
 
 export interface TicketsTable {
@@ -46,6 +49,7 @@ export interface TicketsTable {
   category_confidence: number | null;
   code_related: number | null;
   summary: string | null;
+  partition_key: string | null;
 }
 
 export interface MessagesTable {
