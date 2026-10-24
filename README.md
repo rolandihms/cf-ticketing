@@ -11,7 +11,7 @@ Email arrives at `support@yourdomain.com` and Cloudflare Email Routing hands it 
 3. Emails the customer an acknowledgement that carries the ticket number.
 4. Runs your **plugins**: AI classification, GitHub issues, webhooks or anything else.
 
-> Status: **working end to end on a live domain.** Inbound email → ticket → acknowledgement → AI classification → optional GitHub issue and webhooks. Next: the agent workflow API, then a UI. See [docs/PLAN.md](docs/PLAN.md).
+> Status: **working end to end on a live domain.** Inbound email → ticket → acknowledgement → AI classification → optional GitHub issue and webhooks, plus an [agent API](docs/AGENT-API.md). It can run **headless inside your own app**, with prefixed tables in your database, your login, and per-tenant partitions: see [docs/EMBEDDING.md](docs/EMBEDDING.md). Next: an SDK and `cf-helpdesk init`, then a UI. See [docs/HEADLESS-PLAN.md](docs/HEADLESS-PLAN.md).
 
 ## Deploy to your Cloudflare account (5 minutes)
 

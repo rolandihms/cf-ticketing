@@ -4,10 +4,11 @@ This is the REST API that agents (and later the web UI) use to work tickets. Bas
 
 ## Authentication
 
-There are two ways in.
+There are three ways in.
 
 | Who | How | Role |
 |---|---|---|
+| **A host app** (embedding) | Over a service binding, with `X-Helpdesk-Service-Key` and `X-Helpdesk-Principal` (JSON: `externalId`, `email`, `name`, `role`, `partition`). Off unless `TRUSTED_PRINCIPAL=on`. The agent is created and re-synced from the identity on every request. See [EMBEDDING.md](EMBEDDING.md). | The given role, limited to the given partition |
 | **People** | **Cloudflare Access** in front of the Worker. Access adds the `Cf-Access-Jwt-Assertion` header (or the `CF_Authorization` cookie). The Worker **verifies the JWT itself** (RS256 against your team's certs, plus audience, issuer and expiry). The verified email must belong to an **active agent**. | The agent's role (`admin` or `agent`) |
 | **Automation** | `Authorization: Bearer <API_TOKEN>`. The token is the Worker secret created by `npm run setup` and saved in `apps/worker/.helpdesk/<profile>.env`. | `admin` (service) |
 
@@ -27,9 +28,9 @@ There are two ways in.
 
 Access decides **who may reach** the Worker. The agents table decides **who may act**: an Access-approved person without an active agent record gets `403`.
 
-**Permission model (v1):**
-- Every active agent can see and work every ticket.
-- `admin` additionally manages agents and mailboxes.
+**Permission model:**
+- Every active agent can see and work every ticket **in its partition**. Callers without a partition (the API token, global agents, a trusted principal with `partition: null`) see everything. Outside your partition, everything answers `404`. See [EMBEDDING.md](EMBEDDING.md#4-partitions-multi-tenancy).
+- `admin` additionally manages agents and mailboxes. A partition-restricted admin manages only its own partition's agents.
 - The help desk always keeps at least one active admin; the last one can't be demoted or deactivated.
 
 **Browser safety:**
@@ -43,16 +44,17 @@ Access decides **who may reach** the Worker. The agents table decides **who may 
 |---|---|---|
 | `GET /api/me` | any | The authenticated principal |
 | `GET /api/agents` | any | List agents |
-| `POST /api/agents` `{email, name, role?}` | admin | Create an agent. Idempotent by email. |
-| `PATCH /api/agents/:id` `{name?, role?, active?}` | admin | Update or deactivate an agent. You can't demote or deactivate yourself. |
-| `GET /api/mailboxes` | any | List mailboxes |
-| `POST /api/mailboxes` `{address, name, refPrefix, fromName?}` | admin | Add a mailbox |
-| `GET /api/tickets` | any | List tickets, newest first. Filters: `status=open,pending`, `assignee=me\|unassigned\|<agentId>`, `category=bug`, `mailbox=<id>`, `q=<text in subject or ref>`, `limit` (1–100), `cursor` (from `nextCursor`). `nextCursor: null` means you've reached the end; the last page can be empty. |
-| `GET /api/tickets/:ref` | any | The ticket with requester, messages, events and classifications |
+| `POST /api/agents` `{email, name, role?, partition?}` | admin | Create an agent. Idempotent by email. Restricted admins always create in their own partition. |
+| `PATCH /api/agents/:id` `{name?, role?, active?, partition?}` | admin | Update or deactivate an agent. You can't demote or deactivate yourself. Only unrestricted admins change `partition`. |
+| `GET /api/mailboxes` | any | List mailboxes (your partition's) |
+| `POST /api/mailboxes` `{address, name, refPrefix, fromName?, partition?}` | admin | Add a mailbox. Its tickets inherit `partition`. |
+| `GET /api/tickets` | any | List tickets, newest first. Filters: `status=open,pending`, `assignee=me\|unassigned\|<agentId>`, `category=bug`, `mailbox=<id>`, `q=<text in subject or ref>`, `partition=<key>` (unrestricted callers only), `limit` (1–100), `cursor` (from `nextCursor`). `nextCursor: null` means you've reached the end; the last page can be empty. |
+| `GET /api/tickets/:ref` | any | The ticket with requester, messages, attachments, events and classifications |
 | `PATCH /api/tickets/:ref` `{status?, priority?, assignee?}` | any | `assignee` is an agent id, `"me"`, or `null`. Each change is recorded as an event attributed to you. Updates are compare-and-set: if someone changed the same field meanwhile, you get `409`; reload and retry. |
 | `POST /api/tickets/:ref/notes` `{text}` | any | An internal note. Never emailed. |
 | `POST /api/tickets/:ref/replies` `{text, status?}` | any | **Emails the customer** (details below). |
 | `GET /api/messages/:id/text` | any | The full text of a message, note or reply. Bodies live in R2. |
+| `GET /api/attachments/:id` | any | Download an attachment. Always served as a download (`nosniff`, sandbox CSP). |
 
 Statuses: `new`, `open`, `pending` (waiting on the customer), `on_hold`, `solved`, `closed`. Priorities: `low`, `normal`, `high`, `urgent`.
 
@@ -83,8 +85,13 @@ Statuses: `new`, `open`, `pending` (waiting on the customer), `on_hold`, `solved
    - Repeating a reply with the same `Idempotency-Key` returned `201`, then `200`, with exactly one email sent.
    - A `text/plain` POST was rejected with `415`.
 
+### Events
+
+Agent actions raise `ticket.status_changed`, `ticket.priority_changed`, `ticket.assigned`, `ticket.replied` and `ticket.note_added` for plugins' `onEvent` (for example signed webhooks).
+- Delivery runs in the Workflow, so it is durable and retried.
+- If events can't be queued, the action still succeeds; the change is recorded on the ticket either way.
+
 ## Not yet
 
-- Webhook events for agent actions (`ticket.replied`, `ticket.assigned` …). Plugins currently run only in the inbound Workflow.
 - Attachments on replies, canned responses, and SLA timers.
 - The web UI. This API is its backend.

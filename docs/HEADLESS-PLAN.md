@@ -48,7 +48,11 @@ Rules:
 
 ## Phases
 
-### H1: make it embeddable (this repo)
+### H1: make it embeddable (this repo) ✅ built (branch `feat/headless-h1`)
+
+Factory, prefixing, partitions, trusted principal, agent events and attachments are all done. The host guide is [EMBEDDING.md](EMBEDDING.md). Two deviations from the list below:
+- Agent-action events reuse the existing Workflow (a `kind: "agent-events"` payload), so no new binding is needed.
+- The Prisma file is still manual (documented); its generation moves to `cf-helpdesk init` in H2.
 1. **Factory.** Today `api.ts` is a module-level `new Hono()` with an ambient `Env`. Replace it with `createHelpdesk(config) → { fetch, email, InboundEmailWorkflow }`. Config (prefix, driver, auth modes) is passed in, and `apps/worker` becomes a three-line consumer.
 2. **Prefix everything.**
    - Tables, index names (global on SQLite/Postgres) and the `_helpdesk_migrations` table.
