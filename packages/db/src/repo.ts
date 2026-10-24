@@ -114,8 +114,13 @@ export interface HelpdeskRepo {
   /** All mailboxes, or those of one partition. */
   listMailboxes(opts?: { partition?: string }): Promise<Mailbox[]>;
   // ---- agents ----
-  /** All agents, or those usable in one partition (that partition's agents plus unrestricted ones). */
+  /**
+   * All agents, or those who work in one partition: agents restricted to it, global agents created
+   * in the help desk, and host-provisioned agents seen in that partition (or with every partition).
+   */
   listAgents(opts?: { partition?: string }): Promise<Agent[]>;
+  /** Partitions a host-provisioned agent has been seen in ("*" = every partition). */
+  getAgentPartitions(agentId: string): Promise<string[]>;
   getAgent(id: string): Promise<Agent | null>;
   getAgentByEmail(email: string): Promise<Agent | null>;
   /** Insert-if-absent by email; returns the stored agent (existing one wins). */
@@ -127,7 +132,7 @@ export interface HelpdeskRepo {
    * earlier with the same email and no external id is linked. Throws AgentIdentityConflictError if
    * that email belongs to a different external user.
    */
-  upsertAgentByExternalId(input: { externalId: string; email: string; name: string; role: AgentRole }): Promise<Agent>;
+  upsertAgentByExternalId(input: { externalId: string; email: string; name: string; role: AgentRole; partition: string | null }): Promise<Agent>;
   // ---- agent actions ----
   /**
    * Change status / priority / assignee atomically and record one event per change.
@@ -449,8 +454,25 @@ export class SqlRepo implements HelpdeskRepo {
   async listAgents(opts: { partition?: string } = {}) {
     let q = this.db.selectFrom("agents").selectAll().orderBy("email");
     const p = opts.partition;
-    if (p !== undefined) q = q.where((eb) => eb.or([eb("partition_key", "=", p), eb("partition_key", "is", null)]));
+    if (p !== undefined) {
+      q = q.where((eb) =>
+        eb.or([
+          eb("partition_key", "=", p),
+          eb.and([
+            eb("partition_key", "is", null),
+            eb.or([
+              eb("external_id", "is", null),
+              eb("id", "in", eb.selectFrom("agent_partitions").select("agent_id").where("partition_key", "in", [p, "*"])),
+            ]),
+          ]),
+        ]),
+      );
+    }
     return (await q.execute()).map(toAgent);
+  }
+
+  async getAgentPartitions(agentId: string) {
+    return (await this.db.selectFrom("agent_partitions").select("partition_key").where("agent_id", "=", agentId).execute()).map((r) => r.partition_key);
   }
 
   async getAgent(id: string) {
@@ -484,7 +506,7 @@ export class SqlRepo implements HelpdeskRepo {
     return this.getAgent(id);
   }
 
-  async upsertAgentByExternalId(input: { externalId: string; email: string; name: string; role: AgentRole }): Promise<Agent> {
+  async upsertAgentByExternalId(input: { externalId: string; email: string; name: string; role: AgentRole; partition: string | null }): Promise<Agent> {
     const email = input.email.toLowerCase();
     const byExternal = () => this.db.selectFrom("agents").selectAll().where("external_id", "=", input.externalId).executeTakeFirst();
     let row = await byExternal();
@@ -515,9 +537,15 @@ export class SqlRepo implements HelpdeskRepo {
     }
     // The host is the source of truth: sync what changed.
     if (row.email !== email || row.name !== input.name || row.role !== input.role || Number(row.active) !== 1) {
+      const owner = row.email !== email ? await this.getAgentByEmail(email) : null;
+      if (owner && owner.id !== row.id) throw new AgentIdentityConflictError(`${email} already belongs to another agent`);
       await this.db.updateTable("agents").set({ email, name: input.name, role: input.role, active: 1 }).where("id", "=", row.id).execute();
       row = (await byExternal())!;
     }
+    await this.insertIgnore(
+      this.db.insertInto("agent_partitions").values({ agent_id: row.id, partition_key: input.partition ?? "*", created_at: now() }),
+      ["agent_id", "partition_key"],
+    ).execute();
     return toAgent(row);
   }
 

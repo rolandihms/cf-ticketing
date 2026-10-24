@@ -1,4 +1,4 @@
-import { type AgentRole, normalizeMessageId, sha256Hex, subjectWithRef, type Ticket, TICKET_PRIORITIES, TICKET_STATUSES, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
+import { type Agent, type AgentRole, normalizeMessageId, sha256Hex, subjectWithRef, type Ticket, TICKET_PRIORITIES, TICKET_STATUSES, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
 import { AgentIdentityConflictError, type HelpdeskRepo, TicketConflictError, type TicketFilter, type TicketPatch, withRepo } from "@cf-helpdesk/db";
 import { type Context, Hono } from "hono";
 import { AccessUnavailableError, parseTrustedIdentity, type Principal, secretsEqual, verifyAccessJwt } from "./auth";
@@ -89,7 +89,20 @@ async function storeBody(env: HelpdeskEnv, ticketId: string, kind: "note" | "rep
   return key;
 }
 
+/**
+ * Can this agent work tickets in `partition`? Restricted agents: only their own. Host-provisioned
+ * agents: partitions the host has sent them with ("*" = all). Other global agents: everywhere.
+ */
+async function canWork(repo: HelpdeskRepo, agent: Agent, partition: string | null) {
+  if (agent.partition !== null) return agent.partition === partition;
+  if (agent.externalId === null) return true;
+  const seen = await repo.getAgentPartitions(agent.id);
+  return seen.includes("*") || (partition !== null && seen.includes(partition));
+}
+
 const preview = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 500);
+/** RFC 5987 value: encodeURIComponent leaves ' ( ) * ! unencoded, which aren't attr-chars. */
+const rfc5987 = (s: string) => encodeURIComponent(s).replace(/['()*!]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 const ROLES: AgentRole[] = ["admin", "agent"];
 
@@ -141,6 +154,7 @@ export function createApi(config: HelpdeskOptions) {
       if (typeof id === "string") throw new HttpError(400, id);
       // The host is the source of truth for who this is: provision or re-sync the agent every time.
       const agent = await withRepo(env, (r) => r.upsertAgentByExternalId(id));
+      // (The upsert also records that this agent works in id.partition; see canWork.)
       c.set("principal", { kind: "agent", role: agent.role, actor: `agent:${agent.id}`, agent, partition: id.partition, via: "trusted" });
       return next();
     }
@@ -160,6 +174,8 @@ export function createApi(config: HelpdeskOptions) {
       if (!claims) throw new HttpError(401, "invalid Access token");
       const agent = await withRepo(env, (r) => r.getAgentByEmail(claims.email));
       if (!agent || !agent.active) throw new HttpError(403, `${claims.email} is not an active agent`);
+      // Host-provisioned agents get their partition from the host per request; they sign in there.
+      if (agent.externalId) throw new HttpError(403, `${claims.email} signs in through the host application`);
       c.set("principal", { kind: "agent", role: agent.role, actor: `agent:${agent.id}`, agent, partition: agent.partition, via: "access" });
       return next();
     }
@@ -189,8 +205,16 @@ export function createApi(config: HelpdeskOptions) {
     if (!ROLES.includes(role)) throw new HttpError(400, `role must be one of ${ROLES.join(", ")}`);
     // A partition-restricted admin can only create agents in its own partition.
     const partition = p.partition ?? partitionField(b.partition) ?? null;
-    const agent = await withRepo(c.env, (r) => r.createAgent({ email, name: str(b.name, "name", 255), role, partition }));
-    return c.json(agent, 201);
+    const { agent, created } = await withRepo(c.env, async (r) => {
+      const existing = await r.getAgentByEmail(email);
+      // Idempotent for the same caller's agents; never return (or reveal details of) someone else's.
+      if (existing) {
+        if (!visible(p, existing.partition) || (p.partition !== null && existing.partition === null)) throw new HttpError(409, "email is already in use");
+        return { agent: existing, created: false };
+      }
+      return { agent: await r.createAgent({ email, name: str(b.name, "name", 255), role, partition }), created: true };
+    });
+    return c.json(agent, created ? 201 : 200);
   });
 
   api.patch("/api/agents/:id", async (c) => {
@@ -236,7 +260,7 @@ export function createApi(config: HelpdeskOptions) {
     const partition = p.partition ?? partitionField(b.partition) ?? null;
     const mailbox = await withRepo(c.env, async (r) => {
       const existing = await r.getMailboxByAddress(b.address!);
-      if (existing && !visible(p, existing.partition)) throw new HttpError(409, "address is already in use");
+      if (existing && (!visible(p, existing.partition) || existing.partition !== partition)) throw new HttpError(409, "address is already in use");
       return r.createMailbox({ address: b.address!, name: str(b.name, "name", 255), refPrefix: b.refPrefix!, fromName: b.fromName ?? null, partition });
     });
     return c.json(mailbox, 201);
@@ -298,8 +322,7 @@ export function createApi(config: HelpdeskOptions) {
           const id = b.assignee === "me" ? p.agent?.id : b.assignee;
           if (!id) throw new HttpError(400, "assignee=me needs an agent login");
           const agent = await r.getAgent(id);
-          // The assignee must be able to work this ticket: global, or in the ticket's partition.
-          if (!agent || !agent.active || (agent.partition !== null && agent.partition !== ticket.partition)) {
+          if (!agent || !agent.active || !(await canWork(r, agent, ticket.partition))) {
             throw new HttpError(400, "assignee must be an active agent who can see this ticket");
           }
           patch.assigneeId = agent.id;
@@ -436,12 +459,12 @@ export function createApi(config: HelpdeskOptions) {
     });
     const obj = await c.env.MAIL.get(att.r2_key);
     if (!obj) throw new HttpError(404, "attachment not found");
-    const name = (att.filename ?? "attachment").replace(/[\x00-\x1f"\\/]/g, "_").slice(0, 200);
+    const name = (att.filename ?? "attachment").replace(/[\x00-\x1f\x7f"\\/]/g, "_").slice(0, 200);
     return new Response(obj.body, {
       headers: {
         "content-type": /^[\w.+-]+\/[\w.+-]+$/.test(att.mime_type) ? att.mime_type : "application/octet-stream",
         "content-length": String(obj.size),
-        "content-disposition": `attachment; filename="${name.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+        "content-disposition": `attachment; filename="${name.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${rfc5987(name)}`,
         "x-content-type-options": "nosniff",
         "content-security-policy": "default-src 'none'; sandbox",
         "cache-control": "private, no-store",

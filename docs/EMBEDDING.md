@@ -100,7 +100,9 @@ app.all("/api/v1/helpdesk/*", async (c) => {
 **Identity:**
 - `partition` is **required**. Use `null` only for staff who may see every partition.
 - The help desk creates an agent for each `externalId` on first use. It **re-syncs** email, name and role on every request, because your app is the source of truth. It also reactivates an agent that was deactivated.
-- An existing agent with the same email and no `externalId` is linked to it. If the email belongs to a different external user, the API answers `409`.
+- An existing agent with the same email and no `externalId` is linked to it. If the email belongs to a different external user, or a re-synced email clashes with another agent, the API answers `409`.
+- **The host wins.** Changes made through `PATCH /api/agents` to a host-provisioned agent's role, name or active flag are overwritten on that user's next request. The last-admin guard doesn't apply to these agents.
+- Host-provisioned agents sign in through your app only. Cloudflare Access sign-in is refused for them, because their partition comes from your app per request.
 
 ## 4. Partitions (multi-tenancy)
 
@@ -111,6 +113,7 @@ A partition is an opaque string you choose, for example `company:42`.
   - It may assign only agents who are global or in the ticket's partition.
   - A restricted admin creates and manages agents only in its own partition.
 - **Unrestricted callers** (`partition: null`, or the API token) see everything. They can narrow a list with `GET /api/tickets?partition=company:42`.
+- **Agents:** an agent created in the help desk with a partition is restricted to it. A host-provisioned agent belongs to every partition your app has sent with that user (`partition: null` means all of them). It is listed and assignable only there, so one tenant never sees another tenant's staff.
 - **Contacts** (customers) are global by email. One customer writing to two companies is one contact with tickets in two partitions.
 
 ## 5. Events for your app

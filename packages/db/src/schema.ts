@@ -125,6 +125,12 @@ export interface TicketLinksTable {
   updated_at: number;
 }
 
+export interface AgentPartitionsTable {
+  agent_id: string;
+  partition_key: string;
+  created_at: number;
+}
+
 export interface CountersTable {
   scope: string;
   value: number;
@@ -134,6 +140,7 @@ export interface Database {
   mailboxes: MailboxesTable;
   contacts: ContactsTable;
   agents: AgentsTable;
+  agent_partitions: AgentPartitionsTable;
   tickets: TicketsTable;
   messages: MessagesTable;
   attachments: AttachmentsTable;

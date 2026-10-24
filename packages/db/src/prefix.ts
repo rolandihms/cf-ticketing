@@ -6,6 +6,7 @@ import {
   OperationNodeTransformer,
   type PluginTransformQueryArgs,
   type PluginTransformResultArgs,
+  type PrimaryKeyConstraintNode,
   type QueryResult,
   type TableNode,
   type UniqueConstraintNode,
@@ -64,12 +65,20 @@ class PrefixTransformer extends OperationNodeTransformer {
     const n = super.transformUniqueConstraint(node);
     return mark(n.name ? { ...n, name: this.id(n.name) } : n);
   }
+
+  protected override transformPrimaryKeyConstraint(node: PrimaryKeyConstraintNode): PrimaryKeyConstraintNode {
+    if (prefixed.has(node)) return node;
+    const n = super.transformPrimaryKeyConstraint(node);
+    return mark(n.name ? { ...n, name: this.id(n.name) } : n);
+  }
 }
 
 /**
- * Prefix every table, index and named constraint, so the help desk can live in another
- * application's database ("hd_" → hd_tickets, hd_tickets_status_idx). Raw SQL must reference
- * tables with sql.table() for the prefix to apply.
+ * Prefix every table, index and named unique/primary-key constraint, so the help desk can live in
+ * another application's database ("hd_" → hd_tickets, hd_tickets_status_idx). Raw SQL must reference
+ * tables with sql.table() for the prefix to apply. Limits: table aliases ("tickets as t") and CTE
+ * names would be prefixed too, so repo queries don't use them; foreign-key and check constraints
+ * must stay unnamed.
  */
 export class TablePrefixPlugin implements KyselyPlugin {
   readonly #transformer: PrefixTransformer;

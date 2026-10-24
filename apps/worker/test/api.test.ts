@@ -57,7 +57,7 @@ const host = (method: string, path: string, who: Record<string, unknown>, o: { b
 const kim = { externalId: "user_1", email: "kim@host.test", name: "Kim", role: "agent", partition: "company:1" };
 
 beforeEach(async () => {
-  for (const t of ["ticket_links", "ticket_classifications", "attachments", "ticket_events", "messages", "tickets", "contacts", "counters", "agents", "mailboxes"]) {
+  for (const t of ["ticket_links", "ticket_classifications", "attachments", "ticket_events", "messages", "tickets", "contacts", "counters", "agent_partitions", "agents", "mailboxes"]) {
     await env.DB.exec(`DELETE FROM ${t}`);
   }
   _clearAccessCertCache();
@@ -383,6 +383,61 @@ describe("partitions", () => {
   });
 });
 
+describe("host-provisioned agents across tenants", () => {
+  it("are listed and assignable only in partitions the host sent them with", async () => {
+    await admin("POST", "/api/mailboxes", { address: "help@one.test", name: "One", refPrefix: "ONE", partition: "company:1" });
+    const r = repo();
+    const mailbox = (await r.getMailboxByAddress("help@one.test"))!;
+    const c = await r.upsertContact(CUSTOMER, null);
+    const key = "e".repeat(64);
+    const { ticket } = await r.createTicketWithFirstMessage({
+      mailbox, requesterId: c.id, subject: "s", sourceIngestKey: key, attachments: [],
+      message: {
+        direction: "inbound", kind: "customer", ingest_key: key, message_id_hdr: null, provider_msg_id: null, in_reply_to: null, from_addr: CUSTOMER,
+        to_json: "[]", cc_json: null, subject: "s", text_preview: "", text_r2_key: null, html_r2_key: null, raw_r2_key: null, auth_json: null, author_agent_id: null,
+      },
+    });
+    const lee = { externalId: "user_2", email: "lee@host.test", name: "Lee", role: "agent", partition: "company:2" };
+    const leeId = (await host("GET", "/api/me", lee)).json.agent.id;
+    const kimId = (await host("GET", "/api/me", kim)).json.agent.id;
+    const staffId = (await host("GET", "/api/me", { ...kim, externalId: "staff", email: "staff@host.test", role: "admin", partition: null })).json.agent.id;
+
+    const emails = (await host("GET", "/api/agents", kim)).json.agents.map((a: any) => a.email);
+    expect(emails).toContain("kim@host.test");
+    expect(emails).toContain("staff@host.test");
+    expect(emails).not.toContain("lee@host.test");
+
+    expect((await host("PATCH", `/api/tickets/${ticket.ref}`, kim, { body: { assignee: leeId } })).status).toBe(400);
+    expect((await host("PATCH", `/api/tickets/${ticket.ref}`, kim, { body: { assignee: staffId } })).status).toBe(200);
+    expect((await host("PATCH", `/api/tickets/${ticket.ref}`, kim, { body: { assignee: kimId } })).json.assigneeId).toBe(kimId);
+  });
+
+  it("can't sign in through Cloudflare Access (their partition comes from the host)", async () => {
+    await host("GET", "/api/me", kim);
+    expect((await call("GET", "/api/me", { jwt: await accessJwt({ email: "kim@host.test" }) })).status).toBe(403);
+  });
+
+  it("an email clash on re-sync is a 409, not a 500", async () => {
+    await admin("POST", "/api/agents", { email: "taken@host.test", name: "Taken" });
+    await host("GET", "/api/me", kim);
+    expect((await host("GET", "/api/me", { ...kim, email: "taken@host.test" })).status).toBe(409);
+  });
+
+  it("creating an agent or mailbox that exists elsewhere is a conflict, without details", async () => {
+    await admin("POST", "/api/agents", { email: "other@two.test", name: "Other", partition: "company:2" });
+    const boss = { ...kim, externalId: "boss", email: "boss@host.test", role: "admin" };
+    const res = await host("POST", "/api/agents", boss, { body: { email: "other@two.test", name: "X" } });
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(res.json)).not.toContain("company:2");
+    const mine = await host("POST", "/api/agents", boss, { body: { email: "new@one.test", name: "New" } });
+    expect(mine.status).toBe(201);
+    expect((await host("POST", "/api/agents", boss, { body: { email: "new@one.test", name: "New" } })).status).toBe(200);
+
+    await admin("POST", "/api/mailboxes", { address: "help@two.test", name: "Two", refPrefix: "TWO", partition: "company:2" });
+    expect((await admin("POST", "/api/mailboxes", { address: "help@two.test", name: "Two", refPrefix: "TWO", partition: "company:3" })).status).toBe(409);
+  });
+});
+
 describe("attachments", () => {
   it("downloads only as an attachment, never rendered, and hides R2 keys", async () => {
     const t = await newTicket();
@@ -397,7 +452,7 @@ describe("attachments", () => {
 
     const res = await worker.fetch(new Request("https://hd.test/api/attachments/01ATT", { headers: { authorization: "Bearer test-token" } }), env, {} as ExecutionContext);
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-disposition")).toMatch(/^attachment; filename="evil___x\.html"/);
+    expect(res.headers.get("content-disposition")).toMatch(/^attachment; filename="evil___x\.html"; filename\*=UTF-8''evil___x\.html$/);
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(res.headers.get("content-security-policy")).toContain("sandbox");
     expect(await res.text()).toBe("<script>alert(1)</script>");

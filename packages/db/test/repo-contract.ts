@@ -191,21 +191,37 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
     });
 
     it("provisions and re-syncs agents from trusted external identities", async () => {
-      const a = await repo.upsertAgentByExternalId({ externalId: "user_1", email: "Kim@Host.test", name: "Kim", role: "agent" });
+      const a = await repo.upsertAgentByExternalId({ externalId: "user_1", email: "Kim@Host.test", name: "Kim", role: "agent", partition: null });
       expect(a).toMatchObject({ externalId: "user_1", email: "kim@host.test", role: "agent", active: true, partition: null });
       // Role, name and email follow the host; a deactivated agent is reactivated by the host.
       await repo.updateAgent(a.id, { active: false });
-      const b = await repo.upsertAgentByExternalId({ externalId: "user_1", email: "kim2@host.test", name: "Kim B", role: "admin" });
+      const b = await repo.upsertAgentByExternalId({ externalId: "user_1", email: "kim2@host.test", name: "Kim B", role: "admin", partition: null });
       expect(b).toMatchObject({ id: a.id, email: "kim2@host.test", name: "Kim B", role: "admin", active: true });
       // An existing agent with the same email and no external id is linked, not duplicated.
       const pre = await repo.createAgent({ email: "lee@host.test", name: "Lee", role: "agent" });
-      expect((await repo.upsertAgentByExternalId({ externalId: "user_2", email: "lee@host.test", name: "Lee", role: "agent" })).id).toBe(pre.id);
+      expect((await repo.upsertAgentByExternalId({ externalId: "user_2", email: "lee@host.test", name: "Lee", role: "agent", partition: null })).id).toBe(pre.id);
       // …but an email owned by a different external user is a conflict.
-      await expect(repo.upsertAgentByExternalId({ externalId: "user_3", email: "lee@host.test", name: "X", role: "agent" })).rejects.toThrow(/another external user/);
+      await expect(repo.upsertAgentByExternalId({ externalId: "user_3", email: "lee@host.test", name: "X", role: "agent", partition: null })).rejects.toThrow(/another external user/);
       // Concurrent first requests create exactly one agent.
-      const many = await Promise.all([1, 2, 3, 4].map(() => repo.upsertAgentByExternalId({ externalId: "user_9", email: "zed@host.test", name: "Zed", role: "agent" })));
+      const many = await Promise.all([1, 2, 3, 4].map(() => repo.upsertAgentByExternalId({ externalId: "user_9", email: "zed@host.test", name: "Zed", role: "agent", partition: null })));
       expect(new Set(many.map((x) => x.id)).size).toBe(1);
       expect((await repo.listAgents()).filter((x) => x.externalId === "user_9")).toHaveLength(1);
+      // Changing to an email another agent owns is a conflict, not a crash.
+      await expect(repo.upsertAgentByExternalId({ externalId: "user_9", email: "lee@host.test", name: "Zed", role: "agent", partition: null })).rejects.toThrow(/belongs to another agent/);
+    });
+
+    it("lists host-provisioned agents only in partitions they were seen in", async () => {
+      const one = await repo.upsertAgentByExternalId({ externalId: "u1", email: "one@host.test", name: "One", role: "agent", partition: "company:1" });
+      const two = await repo.upsertAgentByExternalId({ externalId: "u2", email: "two@host.test", name: "Two", role: "agent", partition: "company:2" });
+      const staff = await repo.upsertAgentByExternalId({ externalId: "u3", email: "staff@host.test", name: "Staff", role: "admin", partition: null });
+      const local = await repo.createAgent({ email: "local@acme.test", name: "Local", role: "agent" });
+      const ids = async (p: string) => (await repo.listAgents({ partition: p })).map((a) => a.id).sort();
+      expect(await ids("company:1")).toEqual([one.id, staff.id, local.id].sort());
+      expect(await ids("company:2")).toEqual([two.id, staff.id, local.id].sort());
+      await repo.upsertAgentByExternalId({ externalId: "u1", email: "one@host.test", name: "One", role: "agent", partition: "company:2" });
+      expect(await ids("company:2")).toContain(one.id);
+      expect((await repo.getAgentPartitions(one.id)).sort()).toEqual(["company:1", "company:2"]);
+      expect(await repo.getAgentPartitions(staff.id)).toEqual(["*"]);
     });
 
     it("manages agents (idempotent create by email, update, deactivate)", async () => {
@@ -324,4 +340,4 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
   });
 }
 
-export const TABLES = ["ticket_links", "ticket_classifications", "attachments", "ticket_events", "messages", "tickets", "contacts", "agents", "counters", "mailboxes"] as const;
+export const TABLES = ["ticket_links", "ticket_classifications", "attachments", "ticket_events", "messages", "tickets", "contacts", "agent_partitions", "agents", "counters", "mailboxes"] as const;
