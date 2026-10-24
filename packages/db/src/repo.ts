@@ -698,7 +698,7 @@ export class D1Repo extends SqlRepo {
     const messageId = ulid();
     const t = now();
     const scope = `ticket:${input.mailbox.id}`;
-    const counterValue = sql<number>`(SELECT value FROM counters WHERE scope = ${scope})`;
+    const counterValue = sql<number>`(SELECT value FROM ${sql.table("counters")} WHERE scope = ${scope})`;
     const ref = sql<string>`${input.mailbox.refPrefix} || '-' || printf('%06d', ${counterValue})`;
     const atts = this.attachmentRows(messageId, input.attachments, t);
     await this.batch([

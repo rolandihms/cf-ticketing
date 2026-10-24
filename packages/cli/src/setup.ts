@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Answers, domainOf, resourceNames, validateAnswers } from "./answers";
-import { readConfig, renderConfig, type Resources } from "./config";
+import { compileMigrations, renderMigrationFile } from "@cf-helpdesk/db/migrations";
+import { prefixedMigrationsDir, readConfig, renderConfig, type Resources } from "./config";
 import { checkMx } from "./dns";
 import { errorText, failed, type Wrangler } from "./wrangler";
 
@@ -20,7 +21,7 @@ export interface SetupContext {
   log(msg: string): void;
   fetch?: typeof fetch;
   /** Apply Postgres/MySQL migrations (spawns `npm run db:migrate` with DATABASE_URL in env). */
-  runMigrate?(driver: "postgres" | "mysql", url: string): Promise<void>;
+  runMigrate?(driver: "postgres" | "mysql", url: string, tablePrefix?: string): Promise<void>;
   /** Wait between API retries; injected so tests don't sleep. */
   sleep?(ms: number): Promise<void>;
   /** Create resources and write the config, but change nothing about mail flow and don't deploy. */
@@ -226,6 +227,16 @@ export async function runSetup(ctx: SetupContext): Promise<SetupResult> {
     if (failed(r) && !/already exists/i.test(errorText(r))) throw new SetupError(`Creating the R2 bucket failed: ${errorText(r)}`);
   }
 
+  if (a.db === "d1" && a.tablePrefix) {
+    // `wrangler d1 migrations apply` reads SQL files, so render the prefixed set for this profile.
+    const dir = join(ctx.workerDir, prefixedMigrationsDir(a.profile));
+    await mkdir(dir, { recursive: true });
+    for (const m of compileMigrations("sqlite", a.tablePrefix)) {
+      await writeFile(join(dir, `${m.name}.sql`), renderMigrationFile("sqlite", m.name, m.statements, a.tablePrefix));
+    }
+    log(`Wrote prefixed migrations (${a.tablePrefix}) to ${dir}`);
+  }
+
   const template = await readFile(join(ctx.workerDir, "wrangler.jsonc"), "utf8");
   await writeFile(configPath, renderConfig(template, { ...a, addresses }, resources));
   log(`Wrote ${configPath}`);
@@ -249,13 +260,17 @@ export async function runSetup(ctx: SetupContext): Promise<SetupResult> {
     await must(ctx, ["d1", "migrations", "apply", "DB", "--remote", "-c", configName], "Applying D1 migrations");
   } else if (a.db === "planetscale") {
     log(
-      "  PlanetScale: apply packages/db/migrations/mysql/*.sql through a deploy request\n" +
-        "  (see docs/DATABASE.md), then run `npm run db:migrate -- --driver mysql --record-only` with DATABASE_URL set.",
+      (a.tablePrefix
+        ? `  PlanetScale: render the prefixed SQL with \`npm run db:generate -- --table-prefix ${a.tablePrefix} --dialect mysql --out <dir>\`,\n` +
+          "  apply it through a deploy request (see docs/DATABASE.md), then run\n" +
+          `  \`npm run db:migrate -- --driver mysql --table-prefix ${a.tablePrefix} --record-only\` with DATABASE_URL set.`
+        : "  PlanetScale: apply packages/db/migrations/mysql/*.sql through a deploy request\n" +
+          "  (see docs/DATABASE.md), then run `npm run db:migrate -- --driver mysql --record-only` with DATABASE_URL set."),
     );
   } else {
     if (!ctx.runMigrate) throw new SetupError("No migration runner available for Postgres/MySQL.");
     log(`Applying ${a.db} migrations…`);
-    await ctx.runMigrate(a.db, a.databaseUrl!);
+    await ctx.runMigrate(a.db, a.databaseUrl!, a.tablePrefix);
   }
 
   // ---- 3. Changes that affect live mail ---------------------------------------------------------

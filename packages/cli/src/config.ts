@@ -1,6 +1,9 @@
 import { applyEdits, type JSONPath, modify, parse } from "jsonc-parser";
 import { type Answers, domainOf, resourceNames } from "./answers";
 
+/** Where setup writes prefixed D1 migrations for a profile (relative to apps/worker; gitignored). */
+export const prefixedMigrationsDir = (profile: string) => `.helpdesk/${profile}-migrations`;
+
 export interface Resources {
   d1Id?: string;
   hyperdriveId?: string;
@@ -28,11 +31,16 @@ export function renderConfig(template: string, a: Answers & { addresses?: string
   set(["vars", "DB_DRIVER"], a.db);
   set(["vars", "ACK_MODE"], a.ackMode);
   set(["vars", "DEFAULT_REF_PREFIX"], a.refPrefix);
+  if (a.tablePrefix) set(["vars", "TABLE_PREFIX"], a.tablePrefix);
 
   if (a.db === "d1") {
     if (!r.d1Id) throw new Error("renderConfig: D1 database id missing");
     set(["d1_databases", 0, "database_name"], names.d1);
     set(["d1_databases", 0, "database_id"], r.d1Id);
+    if (a.tablePrefix) {
+      set(["d1_databases", 0, "migrations_dir"], prefixedMigrationsDir(a.profile));
+      set(["d1_databases", 0, "migrations_table"], `${a.tablePrefix}d1_migrations`);
+    }
   } else {
     set(["d1_databases"], undefined);
     if (a.db === "postgres" || a.db === "mysql") {

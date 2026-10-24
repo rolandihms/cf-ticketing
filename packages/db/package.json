@@ -5,7 +5,8 @@
   "type": "module",
   "license": "MIT",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./migrations": "./src/migrations-entry.ts"
   },
   "scripts": {
     "generate": "tsx scripts/generate.ts",
