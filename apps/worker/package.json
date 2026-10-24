@@ -1,5 +1,5 @@
 {
-  "name": "@cf-helpdesk/worker",
+  "name": "@cf-helpdesk/app",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,11 +16,9 @@
   "dependencies": {
     "@cf-helpdesk/core": "*",
     "@cf-helpdesk/db": "*",
-    "hono": "^4.13.0",
-    "kysely": "^0.29.6",
-    "postal-mime": "^4.0.6",
-    "ulidx": "^2.4.1",
-    "@cf-helpdesk/plugins": "*"
+    "@cf-helpdesk/plugins": "*",
+    "@cf-helpdesk/worker": "*",
+    "kysely": "^0.29.6"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.2",

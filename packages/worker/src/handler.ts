@@ -1,3 +1,4 @@
+import type { HelpdeskEnv } from "./env";
 import { computeIngestKey, evaluateInbound, type Mailbox } from "@cf-helpdesk/core";
 import { EmailMessage } from "cloudflare:email";
 import { createRepo, type HelpdeskRepo } from "@cf-helpdesk/db";
@@ -17,7 +18,7 @@ function bodyBytes(raw: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer> {
   return raw;
 }
 
-async function resolveMailbox(repo: HelpdeskRepo, env: Env, address: string): Promise<Mailbox | null> {
+async function resolveMailbox(repo: HelpdeskRepo, env: HelpdeskEnv, address: string): Promise<Mailbox | null> {
   const found = await repo.getMailboxByAddress(address);
   if (found || env.AUTO_CREATE_MAILBOXES !== "true") return found;
   return repo.createMailbox({ address, name: address.split("@")[0]!, refPrefix: env.DEFAULT_REF_PREFIX || "TKT" });
@@ -28,7 +29,7 @@ async function resolveMailbox(repo: HelpdeskRepo, env: Env, address: string): Pr
  * Everything is awaited (never waitUntil): if this throws, the sending MTA should retry later,
  * and every step downstream is idempotent so redelivery is safe.
  */
-export async function handleEmail(message: ForwardableEmailMessage, env: Env): Promise<void> {
+export async function handleEmail(message: ForwardableEmailMessage, env: HelpdeskEnv): Promise<void> {
   const repo = await createRepo(env);
   try {
     await handle(message, env, repo);
@@ -37,7 +38,7 @@ export async function handleEmail(message: ForwardableEmailMessage, env: Env): P
   }
 }
 
-async function handle(message: ForwardableEmailMessage, env: Env, repo: HelpdeskRepo): Promise<void> {
+async function handle(message: ForwardableEmailMessage, env: HelpdeskEnv, repo: HelpdeskRepo): Promise<void> {
   const to = message.to.toLowerCase();
 
   const mailbox = await resolveMailbox(repo, env, to);

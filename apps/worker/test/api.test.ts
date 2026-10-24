@@ -4,7 +4,7 @@ import { env } from "cloudflare:workers";
 import { Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src";
-import { _clearAccessCertCache } from "../src/auth";
+import { _clearAccessCertCache } from "@cf-helpdesk/worker";
 import { inboundMessage, rawEmail } from "./helpers";
 
 const repo = () => new D1Repo(env.DB, new Kysely({ dialect: new D1Dialect(env.DB) }));

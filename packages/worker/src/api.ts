@@ -1,10 +1,11 @@
+import type { HelpdeskEnv } from "./env";
 import { type AgentRole, normalizeMessageId, sha256Hex, subjectWithRef, TICKET_PRIORITIES, TICKET_STATUSES, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
 import { type HelpdeskRepo, TicketConflictError, type TicketFilter, type TicketPatch, withRepo } from "@cf-helpdesk/db";
 import { type Context, Hono } from "hono";
 import { AccessUnavailableError, type Principal, secretsEqual, verifyAccessJwt } from "./auth";
 import { newMessageId, type SendFormat, sendViaBinding } from "./email/outbound";
 
-type AppEnv = { Bindings: Env & { API_TOKEN?: string }; Variables: { principal: Principal } };
+type AppEnv = { Bindings: HelpdeskEnv; Variables: { principal: Principal } };
 type C = Context<AppEnv>;
 
 export const api = new Hono<AppEnv>();
@@ -211,7 +212,7 @@ api.patch("/api/tickets/:ref", async (c) => {
 });
 
 /** Store a body in R2 next to the ticket's mail; returns the key. */
-async function storeBody(env: Env, ticketId: string, kind: "note" | "reply", text: string) {
+async function storeBody(env: HelpdeskEnv, ticketId: string, kind: "note" | "reply", text: string) {
   const key = `tickets/${ticketId}/${kind}s/${crypto.randomUUID()}.txt`;
   await env.MAIL.put(key, text, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
   return key;

@@ -1,8 +1,7 @@
 // Your help desk configuration. See docs/PLUGINS.md and docs/AI-PIPELINE.md.
 import { DEFAULT_CATEGORIES, defineHelpdesk, llmClassifier, rulesClassifier } from "@cf-helpdesk/core";
 import { githubIssues, webhooks } from "@cf-helpdesk/plugins";
-import { workersAI } from "./src/ai/workers-ai";
-import { loggerPlugin } from "./src/plugins/logger";
+import { loggerPlugin, workersAI } from "@cf-helpdesk/worker";
 
 export default defineHelpdesk<Env>({
   ackNewTickets: true,
