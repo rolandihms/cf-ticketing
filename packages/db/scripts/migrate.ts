@@ -2,7 +2,8 @@
 //   npm run db:migrate -- --driver postgres --url postgres://user:pass@host:5432/db
 //   npm run db:migrate -- --driver mysql --url mysql://user:pass@host:3306/db
 // DATABASE_URL is used when --url is omitted.
-//   --record-only   mark pending migrations as applied without running them (PlanetScale deploy requests)
+//   --record-only        mark pending migrations as applied without running them (PlanetScale deploy requests)
+//   --table-prefix hd_   prefix every table and index (embedding into another app's database)
 // PlanetScale needs TLS: append ?ssl={"rejectUnauthorized":true} to the mysql:// URL.
 import { Kysely, MysqlDialect, PostgresDialect } from "kysely";
 import { createPool } from "mysql2";
@@ -29,7 +30,10 @@ const db = new Kysely<any>({
 });
 
 try {
-  const applied = await applyMigrations(db, driver, console.log, { recordOnly: process.argv.includes("--record-only") });
+  const applied = await applyMigrations(db, driver, console.log, {
+    recordOnly: process.argv.includes("--record-only"),
+    tablePrefix: arg("table-prefix") ?? process.env.TABLE_PREFIX,
+  });
   console.log(applied.length ? `done: ${applied.length} migration(s) applied` : "already up to date");
 } finally {
   await db.destroy();

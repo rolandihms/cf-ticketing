@@ -1,5 +1,6 @@
 import { Kysely, PostgresDialect } from "kysely";
 import pg from "pg";
+import { withTablePrefix } from "../prefix";
 import { SqlRepo } from "../repo";
 import type { Database } from "../schema";
 
@@ -10,8 +11,8 @@ const types = {
     oid === 20 ? (v: string) => Number(v) : pg.types.getTypeParser(oid, format as "text"),
 };
 
-export function createPostgresRepo(connectionString: string): SqlRepo {
+export function createPostgresRepo(connectionString: string, tablePrefix?: string): SqlRepo {
   // Hyperdrive does the real pooling; a pool per invocation is what its docs recommend.
   const pool = new pg.Pool({ connectionString, max: 2, types: types as never });
-  return new SqlRepo(new Kysely<Database>({ dialect: new PostgresDialect({ pool }) }), "postgres");
+  return new SqlRepo(withTablePrefix(new Kysely<Database>({ dialect: new PostgresDialect({ pool }) }), tablePrefix), "postgres");
 }

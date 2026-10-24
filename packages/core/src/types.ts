@@ -11,6 +11,10 @@ export interface Agent {
   role: AgentRole;
   active: boolean;
   createdAt: number;
+  /** Restricts the agent to one partition (null = all). See docs/EMBEDDING.md. */
+  partition: string | null;
+  /** The host app's user id, for agents provisioned through a trusted principal. */
+  externalId: string | null;
 }
 
 export const TICKET_STATUSES: TicketStatus[] = ["new", "open", "pending", "on_hold", "solved", "closed"];
@@ -22,6 +26,8 @@ export interface Mailbox {
   name: string;
   refPrefix: string;
   fromName: string | null;
+  /** Opaque tenant key chosen by the host app (e.g. "company:42"); copied to the mailbox's tickets. */
+  partition: string | null;
 }
 
 export interface Ticket {
@@ -42,6 +48,8 @@ export interface Ticket {
   categoryConfidence: number | null;
   codeRelated: boolean | null;
   summary: string | null;
+  /** From the mailbox at creation. */
+  partition: string | null;
 }
 
 /** Parsed inbound email, small enough to pass between Workflow steps (bodies live in R2). */

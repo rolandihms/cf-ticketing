@@ -3,6 +3,7 @@ import { Kysely, MysqlDialect, sql } from "kysely";
 import { createPool } from "mysql2";
 import { describe, it } from "vitest";
 import { applyMigrations } from "../src/migrate";
+import { withTablePrefix } from "../src/prefix";
 import { SqlRepo } from "../src/repo";
 import type { Database } from "../src/schema";
 import { repoContract, TABLES } from "./repo-contract";
@@ -25,6 +26,23 @@ if (!url) {
     },
     async () => {
       for (const t of TABLES) await sql`delete from ${sql.table(t)}`.execute(db);
+    },
+  );
+
+  // Same database, prefixed tables next to the unprefixed ones (embedding into another app's database).
+  const dbHd = withTablePrefix(db, "hd_");
+  let migratedHd = false;
+  repoContract(
+    "mysql (table prefix hd_)",
+    async () => {
+      if (!migratedHd) {
+        await applyMigrations(db, "mysql", undefined, { tablePrefix: "hd_" });
+        migratedHd = true;
+      }
+      return new SqlRepo(dbHd, "mysql", async () => {});
+    },
+    async () => {
+      for (const t of TABLES) await sql`delete from ${sql.table(t)}`.execute(dbHd);
     },
   );
 }

@@ -1,9 +1,11 @@
-import { api } from "./api";
-import { handleEmail } from "./handler";
+import { createHelpdesk } from "@cf-helpdesk/worker";
+import config from "../helpdesk.config";
 
-export { InboundEmailWorkflow } from "./workflow";
+const helpdesk = createHelpdesk(config);
+
+export const InboundEmailWorkflow = helpdesk.InboundEmailWorkflow;
 
 export default {
-  fetch: api.fetch,
-  email: (message, env) => handleEmail(message, env),
+  fetch: helpdesk.fetch,
+  email: helpdesk.email,
 } satisfies ExportedHandler<Env>;

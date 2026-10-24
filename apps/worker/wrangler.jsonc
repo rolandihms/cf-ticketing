@@ -67,6 +67,12 @@
     // Agent sign-in via Cloudflare Access (docs/AGENT-API.md). Team domain, e.g. "acme" or
     // "acme.cloudflareaccess.com", and the Access application's AUD tag. Empty = Access login off.
     "ACCESS_TEAM_DOMAIN": "",
-    "ACCESS_AUD": ""
+    "ACCESS_AUD": "",
+    // Embedding (docs/EMBEDDING.md): "on" lets a host app call the API over a service binding with
+    // X-Helpdesk-Service-Key (secret HELPDESK_SERVICE_KEY) and an X-Helpdesk-Principal identity.
+    "TRUSTED_PRINCIPAL": "",
+    // Prefix for every table, e.g. "hd_", when sharing a database with another app. Must match the
+    // prefix the migrations were generated with. Empty = no prefix.
+    "TABLE_PREFIX": ""
   }
 }

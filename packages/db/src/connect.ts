@@ -1,5 +1,6 @@
 import { Kysely } from "kysely";
 import { D1Dialect } from "./d1-dialect";
+import { validateTablePrefix, withTablePrefix } from "./prefix";
 import { D1Repo, type HelpdeskRepo } from "./repo";
 import type { Database } from "./schema";
 import type { DbDriver } from "./types";
@@ -25,6 +26,8 @@ export interface DbEnv {
   DB?: D1Database;
   HYPERDRIVE?: { connectionString: string };
   DATABASE_URL?: string;
+  /** Prefix for every table and index, e.g. "hd_" when sharing another application's database. */
+  TABLE_PREFIX?: string;
 }
 
 const DRIVERS: DbDriver[] = ["d1", "postgres", "mysql", "planetscale"];
@@ -63,22 +66,23 @@ function connectionString(env: DbEnv, driver: DbDriver): string {
  */
 export async function createRepo(env: DbEnv): Promise<HelpdeskRepo> {
   const driver = driverOf(env);
+  const prefix = validateTablePrefix(env.TABLE_PREFIX);
   if (driver === "d1") {
     if (!env.DB) throw new Error("DB_DRIVER=d1 needs a D1 binding named DB");
-    return new D1Repo(env.DB, new Kysely<Database>({ dialect: new D1Dialect(env.DB) }));
+    return new D1Repo(env.DB, withTablePrefix(new Kysely<Database>({ dialect: new D1Dialect(env.DB) }), prefix));
   }
   if ((typeof __HELPDESK_DB_DRIVER__ === "undefined" || __HELPDESK_DB_DRIVER__ === "postgres" || __HELPDESK_DB_DRIVER__ === "all") && driver === "postgres") {
     const { createPostgresRepo } = await import("./drivers/postgres");
-    return createPostgresRepo(connectionString(env, driver));
+    return createPostgresRepo(connectionString(env, driver), prefix);
   }
   if ((typeof __HELPDESK_DB_DRIVER__ === "undefined" || __HELPDESK_DB_DRIVER__ === "mysql" || __HELPDESK_DB_DRIVER__ === "all") && driver === "mysql") {
     const { createMysqlRepo } = await import("./drivers/mysql");
-    return createMysqlRepo(connectionString(env, driver));
+    return createMysqlRepo(connectionString(env, driver), prefix);
   }
   if ((typeof __HELPDESK_DB_DRIVER__ === "undefined" || __HELPDESK_DB_DRIVER__ === "planetscale" || __HELPDESK_DB_DRIVER__ === "all") && driver === "planetscale") {
     if (!env.DATABASE_URL) throw new Error("DB_DRIVER=planetscale needs a DATABASE_URL secret");
     const { createPlanetScaleRepo } = await import("./drivers/planetscale");
-    return createPlanetScaleRepo(env.DATABASE_URL);
+    return createPlanetScaleRepo(env.DATABASE_URL, prefix);
   }
   throw new Error(`driver "${driver}" is not included in this build`);
 }

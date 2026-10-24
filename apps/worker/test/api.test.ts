@@ -4,7 +4,7 @@ import { env } from "cloudflare:workers";
 import { Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src";
-import { _clearAccessCertCache } from "../src/auth";
+import { _clearAccessCertCache } from "@cf-helpdesk/worker";
 import { inboundMessage, rawEmail } from "./helpers";
 
 const repo = () => new D1Repo(env.DB, new Kysely({ dialect: new D1Dialect(env.DB) }));
@@ -43,8 +43,21 @@ async function call(
 }
 const admin = (method: string, path: string, body?: unknown, headers?: Record<string, string>) => call(method, path, { token: "test-token", body, headers });
 
+/** Webhook deliveries received by the fake receiver (agent-action events go through the Workflow). */
+const hooks: { type: string; body: any }[] = [];
+
+// ---- Trusted principal (a host app calling over a service binding) ----
+const TRUSTED = { TRUSTED_PRINCIPAL: "on", HELPDESK_SERVICE_KEY: "svc-key" } as Partial<Env>;
+const host = (method: string, path: string, who: Record<string, unknown>, o: { body?: unknown; key?: string } = {}) =>
+  call(method, path, {
+    env: TRUSTED,
+    body: o.body,
+    headers: { "x-helpdesk-service-key": o.key ?? "svc-key", "x-helpdesk-principal": JSON.stringify(who) },
+  });
+const kim = { externalId: "user_1", email: "kim@host.test", name: "Kim", role: "agent", partition: "company:1" };
+
 beforeEach(async () => {
-  for (const t of ["ticket_links", "ticket_classifications", "attachments", "ticket_events", "messages", "tickets", "contacts", "counters", "agents", "mailboxes"]) {
+  for (const t of ["ticket_links", "ticket_classifications", "attachments", "ticket_events", "messages", "tickets", "contacts", "counters", "agent_partitions", "agents", "mailboxes"]) {
     await env.DB.exec(`DELETE FROM ${t}`);
   }
   _clearAccessCertCache();
@@ -54,10 +67,15 @@ beforeEach(async () => {
     ["sign", "verify"],
   )) as CryptoKeyPair;
   jwk = { ...((await crypto.subtle.exportKey("jwk", keyPair.publicKey)) as JsonWebKey), kid: "k1" };
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-    const url = new Request(input as RequestInfo).url;
-    if (url === `${ISS}/cdn-cgi/access/certs`) return Response.json({ keys: [jwk] });
-    throw new Error(`unexpected fetch ${url}`);
+  hooks.length = 0;
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+    const req = new Request(input as RequestInfo, init);
+    if (req.url === `${ISS}/cdn-cgi/access/certs`) return Response.json({ keys: [jwk] });
+    if (req.url === "https://hooks.test/helpdesk") {
+      hooks.push({ type: req.headers.get("x-helpdesk-event")!, body: JSON.parse(await req.text()) });
+      return new Response("ok");
+    }
+    throw new Error(`unexpected fetch ${req.url}`);
   });
   await repo().createMailbox({ address: SUPPORT, name: "Acme Support", refPrefix: "ACME" });
 });
@@ -85,7 +103,7 @@ describe("authentication", () => {
   });
 
   it("treats the API token as an admin service", async () => {
-    expect((await admin("GET", "/api/me")).json).toEqual({ kind: "service", role: "admin", actor: "api" });
+    expect((await admin("GET", "/api/me")).json).toEqual({ kind: "service", role: "admin", actor: "api", partition: null, via: "token" });
   });
 
   it("accepts a valid Cloudflare Access JWT for an active agent only", async () => {
@@ -274,5 +292,220 @@ describe("agent replies", () => {
     const d = (await admin("GET", `/api/tickets/${t.ref}`)).json;
     expect(d.ticket.status).toBe("open");
     expect(d.messages.map((m: any) => m.kind)).toEqual(["customer", "agent_reply", "customer"]);
+  });
+});
+
+describe("trusted principal (embedding)", () => {
+  it("is off unless enabled, and needs the service key", async () => {
+    const off = await call("GET", "/api/me", { headers: { "x-helpdesk-service-key": "svc-key", "x-helpdesk-principal": JSON.stringify(kim) } });
+    expect(off.status).toBe(401);
+    expect((await host("GET", "/api/me", kim, { key: "wrong" })).status).toBe(401);
+    // The key is checked before the identity header is even parsed.
+    expect((await host("GET", "/api/me", { nonsense: true }, { key: "wrong" })).status).toBe(401);
+  });
+
+  it("validates the identity; partition must be given explicitly", async () => {
+    const { partition: _p, ...noPartition } = kim;
+    expect((await host("GET", "/api/me", noPartition)).json.error).toMatch(/partition is required/);
+    expect((await host("GET", "/api/me", { ...kim, role: "owner" })).status).toBe(400);
+    expect((await host("GET", "/api/me", { ...kim, email: "nope" })).status).toBe(400);
+  });
+
+  it("provisions the agent on first use and re-syncs role and name from the host", async () => {
+    const me = await host("GET", "/api/me", kim);
+    expect(me.status).toBe(200);
+    expect(me.json).toMatchObject({ kind: "agent", role: "agent", via: "trusted", partition: "company:1", agent: { externalId: "user_1", email: "kim@host.test" } });
+    const again = await host("GET", "/api/me", { ...kim, role: "admin", name: "Kim Admin" });
+    expect(again.json).toMatchObject({ role: "admin", agent: { id: me.json.agent.id, name: "Kim Admin", role: "admin" } });
+    // Partition comes from the request, not the agent: the same user can work another company.
+    expect((await host("GET", "/api/me", { ...kim, partition: "company:2" })).json.partition).toBe("company:2");
+  });
+});
+
+describe("partitions", () => {
+  async function setup() {
+    await admin("POST", "/api/mailboxes", { address: "help@one.test", name: "One", refPrefix: "ONE", partition: "company:1" });
+    await admin("POST", "/api/mailboxes", { address: "help@two.test", name: "Two", refPrefix: "TWO", partition: "company:2" });
+    const r = repo();
+    const mk = async (address: string) => {
+      const mailbox = (await r.getMailboxByAddress(address))!;
+      const c = await r.upsertContact(CUSTOMER, "Jane");
+      const key = crypto.randomUUID().replace(/-/g, "").padEnd(64, "0");
+      return (await r.createTicketWithFirstMessage({
+        mailbox, requesterId: c.id, subject: "Leaking tap", sourceIngestKey: key,
+        attachments: [],
+        message: {
+          direction: "inbound", kind: "customer", ingest_key: key, message_id_hdr: `<${key.slice(0, 8)}@cust.example>`, provider_msg_id: null,
+          in_reply_to: null, from_addr: CUSTOMER, to_json: "[]", cc_json: null, subject: "Leaking tap", text_preview: "drip", text_r2_key: null,
+          html_r2_key: null, raw_r2_key: null, auth_json: null, author_agent_id: null,
+        },
+      })).ticket;
+    };
+    const one = await mk("help@one.test");
+    const two = await mk("help@two.test");
+    return { one, two };
+  }
+
+  it("restricts a partitioned caller to its own mailboxes, tickets and messages", async () => {
+    const { one, two } = await setup();
+    const list = (await host("GET", "/api/tickets", kim)).json.tickets.map((t: any) => t.ref);
+    expect(list).toEqual([one.ref]);
+    expect((await host("GET", "/api/mailboxes", kim)).json.mailboxes.map((m: any) => m.address)).toEqual(["help@one.test"]);
+    expect((await host("GET", `/api/tickets/${one.ref}`, kim)).status).toBe(200);
+    for (const [method, path, body] of [
+      ["GET", `/api/tickets/${two.ref}`],
+      ["PATCH", `/api/tickets/${two.ref}`, { status: "open" }],
+      ["POST", `/api/tickets/${two.ref}/notes`, { text: "x" }],
+      ["POST", `/api/tickets/${two.ref}/replies`, { text: "x" }],
+    ] as const) {
+      expect((await host(method, path, kim, { body })).status, `${method} ${path}`).toBe(404);
+    }
+    const otherMsg = (await admin("GET", `/api/tickets/${two.ref}`)).json.messages[0].id;
+    expect((await host("GET", `/api/messages/${otherMsg}/text`, kim)).status).toBe(404);
+    // Unrestricted callers see everything and may narrow to one partition.
+    expect((await admin("GET", "/api/tickets")).json.tickets).toHaveLength(2);
+    expect((await admin("GET", "/api/tickets?partition=company:2")).json.tickets.map((t: any) => t.ref)).toEqual([two.ref]);
+  });
+
+  it("only assigns agents who can see the ticket; restricted admins create agents in their partition", async () => {
+    const { one } = await setup();
+    const outsider = (await admin("POST", "/api/agents", { email: "out@two.test", name: "Out", partition: "company:2" })).json;
+    const global = (await admin("POST", "/api/agents", { email: "staff@acme.test", name: "Staff" })).json;
+    expect((await host("PATCH", `/api/tickets/${one.ref}`, kim, { body: { assignee: outsider.id } })).status).toBe(400);
+    expect((await host("PATCH", `/api/tickets/${one.ref}`, kim, { body: { assignee: global.id } })).json.assigneeId).toBe(global.id);
+
+    const boss = { ...kim, externalId: "user_2", email: "boss@host.test", role: "admin" };
+    const made = (await host("POST", "/api/agents", boss, { body: { email: "new@one.test", name: "New", partition: null } })).json;
+    expect(made.partition).toBe("company:1");
+    expect((await host("PATCH", `/api/agents/${global.id}`, boss, { body: { name: "Hijack" } })).status).toBe(404);
+    expect((await host("PATCH", `/api/agents/${made.id}`, boss, { body: { partition: null } })).status).toBe(403);
+    expect((await host("GET", "/api/agents", boss)).json.agents.map((a: any) => a.email)).not.toContain("out@two.test");
+  });
+});
+
+describe("host-provisioned agents across tenants", () => {
+  it("are listed and assignable only in partitions the host sent them with", async () => {
+    await admin("POST", "/api/mailboxes", { address: "help@one.test", name: "One", refPrefix: "ONE", partition: "company:1" });
+    const r = repo();
+    const mailbox = (await r.getMailboxByAddress("help@one.test"))!;
+    const c = await r.upsertContact(CUSTOMER, null);
+    const key = "e".repeat(64);
+    const { ticket } = await r.createTicketWithFirstMessage({
+      mailbox, requesterId: c.id, subject: "s", sourceIngestKey: key, attachments: [],
+      message: {
+        direction: "inbound", kind: "customer", ingest_key: key, message_id_hdr: null, provider_msg_id: null, in_reply_to: null, from_addr: CUSTOMER,
+        to_json: "[]", cc_json: null, subject: "s", text_preview: "", text_r2_key: null, html_r2_key: null, raw_r2_key: null, auth_json: null, author_agent_id: null,
+      },
+    });
+    const lee = { externalId: "user_2", email: "lee@host.test", name: "Lee", role: "agent", partition: "company:2" };
+    const leeId = (await host("GET", "/api/me", lee)).json.agent.id;
+    const kimId = (await host("GET", "/api/me", kim)).json.agent.id;
+    const staffId = (await host("GET", "/api/me", { ...kim, externalId: "staff", email: "staff@host.test", role: "admin", partition: null })).json.agent.id;
+
+    const emails = (await host("GET", "/api/agents", kim)).json.agents.map((a: any) => a.email);
+    expect(emails).toContain("kim@host.test");
+    expect(emails).toContain("staff@host.test");
+    expect(emails).not.toContain("lee@host.test");
+
+    expect((await host("PATCH", `/api/tickets/${ticket.ref}`, kim, { body: { assignee: leeId } })).status).toBe(400);
+    expect((await host("PATCH", `/api/tickets/${ticket.ref}`, kim, { body: { assignee: staffId } })).status).toBe(200);
+    expect((await host("PATCH", `/api/tickets/${ticket.ref}`, kim, { body: { assignee: kimId } })).json.assigneeId).toBe(kimId);
+  });
+
+  it("can't sign in through Cloudflare Access (their partition comes from the host)", async () => {
+    await host("GET", "/api/me", kim);
+    expect((await call("GET", "/api/me", { jwt: await accessJwt({ email: "kim@host.test" }) })).status).toBe(403);
+  });
+
+  it("an email clash on re-sync is a 409, not a 500", async () => {
+    await admin("POST", "/api/agents", { email: "taken@host.test", name: "Taken" });
+    await host("GET", "/api/me", kim);
+    expect((await host("GET", "/api/me", { ...kim, email: "taken@host.test" })).status).toBe(409);
+  });
+
+  it("creating an agent or mailbox that exists elsewhere is a conflict, without details", async () => {
+    await admin("POST", "/api/agents", { email: "other@two.test", name: "Other", partition: "company:2" });
+    const boss = { ...kim, externalId: "boss", email: "boss@host.test", role: "admin" };
+    const res = await host("POST", "/api/agents", boss, { body: { email: "other@two.test", name: "X" } });
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(res.json)).not.toContain("company:2");
+    const mine = await host("POST", "/api/agents", boss, { body: { email: "new@one.test", name: "New" } });
+    expect(mine.status).toBe(201);
+    expect((await host("POST", "/api/agents", boss, { body: { email: "new@one.test", name: "New" } })).status).toBe(200);
+
+    await admin("POST", "/api/mailboxes", { address: "help@two.test", name: "Two", refPrefix: "TWO", partition: "company:2" });
+    expect((await admin("POST", "/api/mailboxes", { address: "help@two.test", name: "Two", refPrefix: "TWO", partition: "company:3" })).status).toBe(409);
+  });
+});
+
+describe("attachments", () => {
+  it("downloads only as an attachment, never rendered, and hides R2 keys", async () => {
+    const t = await newTicket();
+    const r = repo();
+    const msg = (await r.getTicketDetail(t.ref))!.messages[0]!;
+    await env.MAIL.put("att/evil", "<script>alert(1)</script>");
+    await env.DB.prepare("INSERT INTO attachments (id, message_id, r2_key, filename, mime_type, size, created_at) VALUES ('01ATT', ?, 'att/evil', ?, 'text/html', 25, 1)")
+      .bind(msg.id, 'evil"\r\nx.html').run();
+    const detail = (await admin("GET", `/api/tickets/${t.ref}`)).json;
+    expect(detail.attachments).toEqual([expect.objectContaining({ id: "01ATT", filename: 'evil"\r\nx.html' })]);
+    expect(detail.attachments[0].r2_key).toBeUndefined();
+
+    const res = await worker.fetch(new Request("https://hd.test/api/attachments/01ATT", { headers: { authorization: "Bearer test-token" } }), env, {} as ExecutionContext);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-disposition")).toMatch(/^attachment; filename="evil___x\.html"; filename\*=UTF-8''evil___x\.html$/);
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("content-security-policy")).toContain("sandbox");
+    expect(await res.text()).toBe("<script>alert(1)</script>");
+    expect((await admin("GET", "/api/attachments/nope")).status).toBe(404);
+  });
+
+  it("hides attachments of other partitions", async () => {
+    await admin("POST", "/api/mailboxes", { address: "help@two.test", name: "Two", refPrefix: "TWO", partition: "company:2" });
+    const r = repo();
+    const mailbox = (await r.getMailboxByAddress("help@two.test"))!;
+    const c = await r.upsertContact(CUSTOMER, null);
+    const key = "f".repeat(64);
+    const { ticket } = await r.createTicketWithFirstMessage({
+      mailbox, requesterId: c.id, subject: "s", sourceIngestKey: key,
+      attachments: [{ r2Key: "att/two", filename: "a.pdf", mimeType: "application/pdf", size: 1 }],
+      message: {
+        direction: "inbound", kind: "customer", ingest_key: key, message_id_hdr: null, provider_msg_id: null, in_reply_to: null, from_addr: CUSTOMER,
+        to_json: "[]", cc_json: null, subject: "s", text_preview: "", text_r2_key: null, html_r2_key: null, raw_r2_key: null, auth_json: null, author_agent_id: null,
+      },
+    });
+    await env.MAIL.put("att/two", "x");
+    const att = (await r.getTicketDetail(ticket.ref))!.attachments[0]!;
+    expect((await host("GET", `/api/attachments/${att.id}`, kim)).status).toBe(404);
+    const res = await call("GET", `/api/attachments/${att.id}`, { env: TRUSTED, headers: { "x-helpdesk-service-key": "svc-key", "x-helpdesk-principal": JSON.stringify({ ...kim, partition: "company:2" }) } });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe("agent-action events", () => {
+  it("delivers status, assignment and reply events to plugins (webhooks) through the Workflow", async () => {
+    const t = await newTicket();
+    await using introspector = await introspectWorkflow(env.INBOUND_WORKFLOW);
+    await introspector.modifyAll((m) => m.disableRetryDelays());
+    const who = { ...kim, partition: null };
+    await host("PATCH", `/api/tickets/${t.ref}`, who, { body: { status: "open", assignee: "me" } });
+    await host("POST", `/api/tickets/${t.ref}/replies`, who, { body: { text: "On it", status: "pending" } });
+    await host("POST", `/api/tickets/${t.ref}/notes`, who, { body: { text: "internal" } });
+    for (const i of await introspector.get()) await i.waitForStatus("complete");
+
+    const agentId = (await host("GET", "/api/me", who)).json.agent.id;
+    // ticket.note_added isn't in the endpoint's event list, so it is not delivered.
+    expect(hooks.map((h) => h.type).sort()).toEqual(["ticket.assigned", "ticket.replied", "ticket.status_changed", "ticket.status_changed"].sort());
+    const assigned = hooks.find((h) => h.type === "ticket.assigned")!.body;
+    expect(assigned).toMatchObject({ ticket: { ref: t.ref }, data: { from: null, to: agentId, actor: `agent:${agentId}` } });
+    expect(new Set(hooks.map((h) => h.body.id)).size).toBe(hooks.length); // distinct delivery ids
+    expect(hooks.filter((h) => h.type === "ticket.status_changed").map((h) => h.body.data.to).sort()).toEqual(["open", "pending"]);
+  });
+
+  it("doesn't fail the action when events can't be queued", async () => {
+    const t = await newTicket();
+    const INBOUND_WORKFLOW = { create: async () => { throw new Error("workflows down"); } } as unknown as Workflow;
+    const res = await call("PATCH", `/api/tickets/${t.ref}`, { token: "test-token", env: { INBOUND_WORKFLOW }, body: { status: "open" } });
+    expect(res.status).toBe(200);
+    expect(res.json.status).toBe("open");
   });
 });

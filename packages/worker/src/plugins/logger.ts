@@ -1,7 +1,8 @@
+import type { HelpdeskEnv } from "../env";
 import type { HelpdeskPlugin } from "@cf-helpdesk/core";
 
 /** Example plugin: logs ticket activity. Copy it as a starting point for your own. */
-export const loggerPlugin: HelpdeskPlugin<Env> = {
+export const loggerPlugin: HelpdeskPlugin<HelpdeskEnv> = {
   name: "logger",
   async onTicketCreated(ctx) {
     await ctx.step.do("log", async () => {

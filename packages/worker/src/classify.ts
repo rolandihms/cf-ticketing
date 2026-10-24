@@ -1,3 +1,4 @@
+import type { HelpdeskEnv } from "./env";
 import {
   type ClassificationAttempt,
   type ClassificationConfig,
@@ -21,8 +22,8 @@ import type { WorkflowStep } from "cloudflare:workers";
  */
 export async function classifyStage(
   step: WorkflowStep,
-  env: Env,
-  config: ClassificationConfig<Env>,
+  env: HelpdeskEnv,
+  config: ClassificationConfig<HelpdeskEnv>,
   ticket: Ticket,
   inboundMessageId: string,
   meta: InboundMessageMeta,

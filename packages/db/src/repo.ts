@@ -5,7 +5,7 @@ import { monotonicFactory } from "ulidx";
 // Monotonic: ids created in the same millisecond still sort in creation order.
 const ulid = monotonicFactory();
 import { toD1Statement } from "./d1-dialect";
-import type { AgentsTable, Database, MailboxesTable, MessagesTable, TicketClassificationsTable, TicketEventsTable, TicketsTable } from "./schema";
+import type { AgentsTable, AttachmentsTable, Database, MailboxesTable, MessagesTable, TicketClassificationsTable, TicketEventsTable, TicketsTable } from "./schema";
 import type { SqlDialect } from "./types";
 
 export type NewMessage = Omit<MessagesTable, "id" | "ticket_id" | "mailbox_id" | "created_at">;
@@ -27,12 +27,17 @@ export interface TicketDetail {
   ticket: Ticket;
   requester: Contact | null;
   messages: MessagesTable[];
+  /** Attachments of all messages (r2_key is internal; download through the API). */
+  attachments: AttachmentsTable[];
   events: TicketEventsTable[];
   classifications: TicketClassificationsTable[];
 }
 
 /** The ticket changed since the caller read it (compare-and-set failed). */
 export class TicketConflictError extends Error {}
+
+/** A trusted identity's email already belongs to an agent with a different external id. */
+export class AgentIdentityConflictError extends Error {}
 
 export interface TicketFilter {
   /** One or more statuses. */
@@ -46,6 +51,8 @@ export interface TicketFilter {
   limit: number;
   /** Ticket id to continue after (ids are ULIDs, newest first). */
   cursor?: string;
+  /** Only tickets in this partition. Omit for every partition. */
+  partition?: string;
   /** @deprecated use statuses */
   status?: string;
 }
@@ -68,7 +75,7 @@ export interface SaveClassificationInput {
 export interface HelpdeskRepo {
   readonly dialect: SqlDialect;
   getMailboxByAddress(address: string): Promise<Mailbox | null>;
-  createMailbox(input: { address: string; name: string; refPrefix: string; fromName?: string | null }): Promise<Mailbox>;
+  createMailbox(input: { address: string; name: string; refPrefix: string; fromName?: string | null; partition?: string | null }): Promise<Mailbox>;
   listMailboxAddresses(): Promise<string[]>;
   upsertContact(email: string, name: string | null): Promise<Contact>;
   getContact(id: string): Promise<Contact | null>;
@@ -104,14 +111,28 @@ export interface HelpdeskRepo {
   /** Insert-if-absent per (ticket, provider) — the idempotency record for external objects. */
   saveLink(ticketId: string, link: TicketLink): Promise<TicketLink>;
   listTickets(filter: TicketFilter): Promise<Ticket[]>;
-  listMailboxes(): Promise<Mailbox[]>;
+  /** All mailboxes, or those of one partition. */
+  listMailboxes(opts?: { partition?: string }): Promise<Mailbox[]>;
   // ---- agents ----
-  listAgents(): Promise<Agent[]>;
+  /**
+   * All agents, or those who work in one partition: agents restricted to it, global agents created
+   * in the help desk, and host-provisioned agents seen in that partition (or with every partition).
+   */
+  listAgents(opts?: { partition?: string }): Promise<Agent[]>;
+  /** Partitions a host-provisioned agent has been seen in ("*" = every partition). */
+  getAgentPartitions(agentId: string): Promise<string[]>;
   getAgent(id: string): Promise<Agent | null>;
   getAgentByEmail(email: string): Promise<Agent | null>;
   /** Insert-if-absent by email; returns the stored agent (existing one wins). */
-  createAgent(input: { email: string; name: string; role: AgentRole }): Promise<Agent>;
-  updateAgent(id: string, patch: { name?: string; role?: AgentRole; active?: boolean }): Promise<Agent | null>;
+  createAgent(input: { email: string; name: string; role: AgentRole; partition?: string | null }): Promise<Agent>;
+  updateAgent(id: string, patch: { name?: string; role?: AgentRole; active?: boolean; partition?: string | null }): Promise<Agent | null>;
+  /**
+   * Provision or refresh an agent from a trusted host identity (docs/EMBEDDING.md). The host is the
+   * source of truth: email, name and role are synced and the agent is (re)activated. An agent created
+   * earlier with the same email and no external id is linked. Throws AgentIdentityConflictError if
+   * that email belongs to a different external user.
+   */
+  upsertAgentByExternalId(input: { externalId: string; email: string; name: string; role: AgentRole; partition: string | null }): Promise<Agent>;
   // ---- agent actions ----
   /**
    * Change status / priority / assignee atomically and record one event per change.
@@ -133,6 +154,7 @@ export interface HelpdeskRepo {
   getThreading(ticketId: string): Promise<{ inReplyTo: string | null; references: string[]; lastCustomerEmail: string | null }>;
   findMessageByIngestKey(key: string): Promise<MessagesTable | null>;
   getMessage(id: string): Promise<MessagesTable | null>;
+  getAttachment(id: string): Promise<AttachmentsTable | null>;
   /** Release connections (no-op for D1). Call when the request/step is done. */
   close(): Promise<void>;
 }
@@ -156,15 +178,25 @@ function toTicket(r: TicketsTable): Ticket {
     categoryConfidence: r.category_confidence == null ? null : Number(r.category_confidence) / 1000,
     codeRelated: r.code_related == null ? null : Number(r.code_related) === 1,
     summary: r.summary ?? null,
+    partition: r.partition_key ?? null,
   };
 }
 
 function toAgent(r: AgentsTable): Agent {
-  return { id: r.id, email: r.email, name: r.name, role: r.role as AgentRole, active: Number(r.active) === 1, createdAt: Number(r.created_at) };
+  return {
+    id: r.id,
+    email: r.email,
+    name: r.name,
+    role: r.role as AgentRole,
+    active: Number(r.active) === 1,
+    createdAt: Number(r.created_at),
+    partition: r.partition_key ?? null,
+    externalId: r.external_id ?? null,
+  };
 }
 
 function toMailbox(r: MailboxesTable): Mailbox {
-  return { id: r.id, address: r.address, name: r.name, refPrefix: r.ref_prefix, fromName: r.from_name };
+  return { id: r.id, address: r.address, name: r.name, refPrefix: r.ref_prefix, fromName: r.from_name, partition: r.partition_key ?? null };
 }
 
 const milli = (x: number) => Math.round(Math.min(1, Math.max(0, x)) * 1000);
@@ -205,10 +237,10 @@ export class SqlRepo implements HelpdeskRepo {
 
   async getMailboxByAddress(address: string): Promise<Mailbox | null> {
     const r = await this.db.selectFrom("mailboxes").selectAll().where("address", "=", address.toLowerCase()).executeTakeFirst();
-    return r ? { id: r.id, address: r.address, name: r.name, refPrefix: r.ref_prefix, fromName: r.from_name } : null;
+    return r ? toMailbox(r) : null;
   }
 
-  async createMailbox(input: { address: string; name: string; refPrefix: string; fromName?: string | null }) {
+  async createMailbox(input: { address: string; name: string; refPrefix: string; fromName?: string | null; partition?: string | null }) {
     const address = input.address.toLowerCase();
     await this.insertIgnore(
       this.db.insertInto("mailboxes").values({
@@ -219,6 +251,7 @@ export class SqlRepo implements HelpdeskRepo {
         from_name: input.fromName ?? null,
         settings_json: null,
         created_at: now(),
+        partition_key: input.partition ?? null,
       }),
       "address",
     ).execute();
@@ -287,8 +320,16 @@ export class SqlRepo implements HelpdeskRepo {
   async getTicketDetail(ref: string): Promise<TicketDetail | null> {
     const ticket = await this.findTicketByRef(ref);
     if (!ticket) return null;
-    const [messages, events, classifications, requester] = await Promise.all([
+    const [messages, attachments, events, classifications, requester] = await Promise.all([
       this.db.selectFrom("messages").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").orderBy("id").execute(),
+      this.db
+        .selectFrom("attachments")
+        .innerJoin("messages", "messages.id", "attachments.message_id")
+        .selectAll("attachments")
+        .where("messages.ticket_id", "=", ticket.id)
+        .orderBy("attachments.created_at")
+        .orderBy("attachments.id")
+        .execute(),
       this.db.selectFrom("ticket_events").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").orderBy("id").execute(),
       this.db.selectFrom("ticket_classifications").selectAll().where("ticket_id", "=", ticket.id).orderBy("created_at").orderBy("id").execute(),
       this.getContact(ticket.requesterId),
@@ -297,6 +338,7 @@ export class SqlRepo implements HelpdeskRepo {
       ticket,
       requester,
       messages: messages.map(normaliseRow),
+      attachments: attachments.map((a) => ({ ...normaliseRow(a), size: Number(a.size) })),
       events: events.map(normaliseRow),
       classifications: classifications.map(normaliseRow),
     };
@@ -399,15 +441,38 @@ export class SqlRepo implements HelpdeskRepo {
       );
     }
     if (filter.cursor) q = q.where("id", "<", filter.cursor);
+    if (filter.partition !== undefined) q = q.where("partition_key", "=", filter.partition);
     return (await q.execute()).map(toTicket);
   }
 
-  async listMailboxes() {
-    return (await this.db.selectFrom("mailboxes").selectAll().orderBy("address").execute()).map(toMailbox);
+  async listMailboxes(opts: { partition?: string } = {}) {
+    let q = this.db.selectFrom("mailboxes").selectAll().orderBy("address");
+    if (opts.partition !== undefined) q = q.where("partition_key", "=", opts.partition);
+    return (await q.execute()).map(toMailbox);
   }
 
-  async listAgents() {
-    return (await this.db.selectFrom("agents").selectAll().orderBy("email").execute()).map(toAgent);
+  async listAgents(opts: { partition?: string } = {}) {
+    let q = this.db.selectFrom("agents").selectAll().orderBy("email");
+    const p = opts.partition;
+    if (p !== undefined) {
+      q = q.where((eb) =>
+        eb.or([
+          eb("partition_key", "=", p),
+          eb.and([
+            eb("partition_key", "is", null),
+            eb.or([
+              eb("external_id", "is", null),
+              eb("id", "in", eb.selectFrom("agent_partitions").select("agent_id").where("partition_key", "in", [p, "*"])),
+            ]),
+          ]),
+        ]),
+      );
+    }
+    return (await q.execute()).map(toAgent);
+  }
+
+  async getAgentPartitions(agentId: string) {
+    return (await this.db.selectFrom("agent_partitions").select("partition_key").where("agent_id", "=", agentId).execute()).map((r) => r.partition_key);
   }
 
   async getAgent(id: string) {
@@ -420,22 +485,68 @@ export class SqlRepo implements HelpdeskRepo {
     return r ? toAgent(r) : null;
   }
 
-  async createAgent(input: { email: string; name: string; role: AgentRole }) {
+  async createAgent(input: { email: string; name: string; role: AgentRole; partition?: string | null }) {
     const email = input.email.toLowerCase();
     await this.insertIgnore(
-      this.db.insertInto("agents").values({ id: ulid(), email, name: input.name, role: input.role, active: 1, created_at: now() }),
+      this.db.insertInto("agents").values({
+        id: ulid(), email, name: input.name, role: input.role, active: 1, created_at: now(), partition_key: input.partition ?? null, external_id: null,
+      }),
       "email",
     ).execute();
     return (await this.getAgentByEmail(email))!;
   }
 
-  async updateAgent(id: string, patch: { name?: string; role?: AgentRole; active?: boolean }) {
+  async updateAgent(id: string, patch: { name?: string; role?: AgentRole; active?: boolean; partition?: string | null }) {
     const set: Record<string, unknown> = {};
     if (patch.name !== undefined) set.name = patch.name;
     if (patch.role !== undefined) set.role = patch.role;
     if (patch.active !== undefined) set.active = patch.active ? 1 : 0;
+    if (patch.partition !== undefined) set.partition_key = patch.partition;
     if (Object.keys(set).length) await this.db.updateTable("agents").set(set).where("id", "=", id).execute();
     return this.getAgent(id);
+  }
+
+  async upsertAgentByExternalId(input: { externalId: string; email: string; name: string; role: AgentRole; partition: string | null }): Promise<Agent> {
+    const email = input.email.toLowerCase();
+    const byExternal = () => this.db.selectFrom("agents").selectAll().where("external_id", "=", input.externalId).executeTakeFirst();
+    let row = await byExternal();
+    if (!row) {
+      const byEmail = await this.db.selectFrom("agents").selectAll().where("email", "=", email).executeTakeFirst();
+      if (byEmail?.external_id && byEmail.external_id !== input.externalId) {
+        throw new AgentIdentityConflictError(`${email} already belongs to another external user`);
+      }
+      if (byEmail) {
+        // Link the existing agent; the guard keeps a concurrent link from being overwritten.
+        await this.db.updateTable("agents").set({ external_id: input.externalId }).where("id", "=", byEmail.id).where("external_id", "is", null).execute();
+      }
+      let insertError: unknown;
+      if (!byEmail) {
+        // Concurrent first requests race here; the unique indexes make exactly one insert win.
+        await this.insertIgnore(
+          this.db.insertInto("agents").values({
+            id: ulid(), email, name: input.name, role: input.role, active: 1, created_at: now(), partition_key: null, external_id: input.externalId,
+          }),
+          "external_id",
+        ).execute().catch((err) => void (insertError = err)); // e.g. the email was taken meanwhile
+      }
+      row = await byExternal();
+      if (!row) {
+        if (insertError && !(await this.getAgentByEmail(email))) throw insertError;
+        throw new AgentIdentityConflictError(`${email} already belongs to another external user`);
+      }
+    }
+    // The host is the source of truth: sync what changed.
+    if (row.email !== email || row.name !== input.name || row.role !== input.role || Number(row.active) !== 1) {
+      const owner = row.email !== email ? await this.getAgentByEmail(email) : null;
+      if (owner && owner.id !== row.id) throw new AgentIdentityConflictError(`${email} already belongs to another agent`);
+      await this.db.updateTable("agents").set({ email, name: input.name, role: input.role, active: 1 }).where("id", "=", row.id).execute();
+      row = (await byExternal())!;
+    }
+    await this.insertIgnore(
+      this.db.insertInto("agent_partitions").values({ agent_id: row.id, partition_key: input.partition ?? "*", created_at: now() }),
+      ["agent_id", "partition_key"],
+    ).execute();
+    return toAgent(row);
   }
 
   async updateTicket(ticket: Ticket, patch: TicketPatch, actor: string): Promise<Ticket> {
@@ -553,6 +664,11 @@ export class SqlRepo implements HelpdeskRepo {
     return (await this.db.selectFrom("messages").selectAll().where("id", "=", id).executeTakeFirst()) ?? null;
   }
 
+  async getAttachment(id: string) {
+    const r = await this.db.selectFrom("attachments").selectAll().where("id", "=", id).executeTakeFirst();
+    return r ? { ...normaliseRow(r), size: Number(r.size) } : null;
+  }
+
   /** Run writes atomically: a transaction here, a batch in D1Repo. */
   protected async atomic(queries: Compilable[]) {
     await this.db.transaction().execute(async (tx) => {
@@ -636,6 +752,7 @@ export class SqlRepo implements HelpdeskRepo {
       category_confidence: null,
       code_related: null,
       summary: null,
+      partition_key: input.mailbox.partition ?? null,
     };
   }
 
@@ -698,7 +815,7 @@ export class D1Repo extends SqlRepo {
     const messageId = ulid();
     const t = now();
     const scope = `ticket:${input.mailbox.id}`;
-    const counterValue = sql<number>`(SELECT value FROM counters WHERE scope = ${scope})`;
+    const counterValue = sql<number>`(SELECT value FROM ${sql.table("counters")} WHERE scope = ${scope})`;
     const ref = sql<string>`${input.mailbox.refPrefix} || '-' || printf('%06d', ${counterValue})`;
     const atts = this.attachmentRows(messageId, input.attachments, t);
     await this.batch([

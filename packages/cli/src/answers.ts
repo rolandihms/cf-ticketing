@@ -1,3 +1,5 @@
+import { TABLE_PREFIX_RE } from "@cf-helpdesk/db/migrations";
+
 export type DbDriver = "d1" | "postgres" | "mysql" | "planetscale";
 export type AckMode = "send" | "reply" | "off";
 
@@ -18,6 +20,8 @@ export interface Answers {
   db: DbDriver;
   /** For postgres/mysql/planetscale. Never written to disk; stored as Hyperdrive config or a secret. */
   databaseUrl?: string;
+  /** Prefix for every table, e.g. "hd_", when the database is shared with another application. */
+  tablePrefix?: string;
 }
 
 export const ADDRESS_RE = /^[a-z0-9._%+-]+@([a-z0-9-]+\.)+[a-z]{2,}$/i;
@@ -50,6 +54,7 @@ export function validateAnswers(a: Answers): string[] {
   if (!WORKER_NAME_RE.test(a.workerName)) errors.push("worker name: lowercase letters, digits and dashes (max 54)");
   if (!/^[a-z0-9-]{1,40}$/.test(a.profile)) errors.push("profile: lowercase letters, digits and dashes");
   if (!PREFIX_RE.test(a.refPrefix)) errors.push("ref prefix: 2–10 uppercase letters/digits");
+  if (a.tablePrefix && !TABLE_PREFIX_RE.test(a.tablePrefix)) errors.push('table prefix: a lowercase letter, then letters, digits or "_" (max 16), e.g. hd_');
   if (!a.mailboxName.trim()) errors.push("mailbox name is required");
   if (a.db !== "d1" && !a.databaseUrl) errors.push(`--database-url is required for --db ${a.db}`);
   if (a.db === "planetscale" && a.databaseUrl && !a.databaseUrl.startsWith("mysql://")) errors.push("PlanetScale URL must start with mysql://");

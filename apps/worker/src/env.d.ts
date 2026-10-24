@@ -2,4 +2,5 @@
 interface Env {
   GITHUB_TOKEN?: string;
   WEBHOOK_SECRET?: string;
+  HELPDESK_SERVICE_KEY?: string;
 }

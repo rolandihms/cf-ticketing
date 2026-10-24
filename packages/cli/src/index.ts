@@ -32,6 +32,7 @@ Usage: npm run setup -- [options]
   --ack-mode <mode>        send (Workers Paid, any recipient) | reply (Free plan) | off  (default: send)
   --db <driver>            d1 (default) | postgres | mysql | planetscale
   --database-url <url>     Connection URL for postgres/mysql/planetscale
+  --table-prefix <p_>      Prefix every table (e.g. hd_) when sharing a database with another app
   --config-only            Create resources and write the config; don't migrate, deploy or touch mail routing
   --yes                    Non-interactive: accept defaults, and allow re-routing an address from another Worker
   --replace-mx             Allow replacing the domain's existing MX records (never implied by --yes)
@@ -56,6 +57,7 @@ async function main() {
       "ack-mode": { type: "string" },
       db: { type: "string" },
       "database-url": { type: "string" },
+      "table-prefix": { type: "string" },
       "config-only": { type: "boolean" },
       yes: { type: "boolean" },
       "replace-mx": { type: "boolean" },
@@ -126,6 +128,7 @@ async function main() {
         ))) as AckMode,
       db: (f.db ?? (await ask("Database: d1 | postgres | mysql | planetscale", "d1", (v) => ["d1", "postgres", "mysql", "planetscale"].includes(v)))) as DbDriver,
     };
+    if (f["table-prefix"]) answers.tablePrefix = f["table-prefix"];
     if (answers.db !== "d1") answers.databaseUrl = f["database-url"] ?? (await ask(`${answers.db} connection URL`));
 
     const result = await runSetup({
@@ -136,7 +139,8 @@ async function main() {
       log: (m) => console.log(m),
       configOnly: f["config-only"],
       // The URL goes through the environment, not argv, so it doesn't show up in process listings.
-      runMigrate: (driver, url) => npm(["run", "db:migrate", "--", "--driver", driver], { DATABASE_URL: url }),
+      runMigrate: (driver, url, tablePrefix) =>
+        npm(["run", "db:migrate", "--", "--driver", driver, ...(tablePrefix ? ["--table-prefix", tablePrefix] : [])], { DATABASE_URL: url }),
     });
 
     console.log(`

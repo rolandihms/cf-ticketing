@@ -211,6 +211,31 @@ describe("runSetup", () => {
     expect(await readFile(r.configPath, "utf8")).not.toContain("u:p@");
   });
 
+  it("renders prefixed D1 migrations and passes the prefix to the config and the migrate CLI", async () => {
+    const f = fakeWrangler(freshAccount);
+    const r = await runSetup({ wrangler: f.w, answers: answers({ tablePrefix: "hd_" }), workerDir: dir, confirm: async () => false, log: () => {}, fetch: okFetch(), configOnly: true });
+    const cfg = readConfig(await readFile(r.configPath, "utf8"));
+    expect(cfg.vars.TABLE_PREFIX).toBe("hd_");
+    expect(cfg.d1_databases[0]).toMatchObject({ migrations_dir: ".helpdesk/acme-test-migrations", migrations_table: "hd_d1_migrations" });
+    const sql = await readFile(join(dir, ".helpdesk/acme-test-migrations/0001_init.sql"), "utf8");
+    expect(sql).toContain('create table "hd_tickets"');
+    expect(sql).not.toMatch(/create table "(?!hd_)/);
+
+    const migrated: string[] = [];
+    await runSetup({
+      wrangler: fakeWrangler({ ...freshAccount, "hyperdrive create": { stdout: "id: 0123456789abcdef0123456789abcdef" } }).w,
+      answers: answers({ db: "postgres", databaseUrl: "postgres://u:p@db.example:5432/hd", tablePrefix: "hd_" }),
+      workerDir: dir, confirm: async () => false, log: () => {}, fetch: okFetch(), sleep: async () => {},
+      runMigrate: async (d, _url, prefix) => void migrated.push(`${d} ${prefix}`),
+    });
+    expect(migrated).toEqual(["postgres hd_"]);
+  });
+
+  it("rejects an invalid table prefix", async () => {
+    const f = fakeWrangler(freshAccount);
+    await expect(runSetup({ wrangler: f.w, answers: answers({ tablePrefix: "HD-" }), workerDir: dir, confirm: async () => true, log: () => {} })).rejects.toThrow(/table prefix/);
+  });
+
   it("validates answers before touching Cloudflare", async () => {
     const f = fakeWrangler(freshAccount);
     await expect(runSetup({ wrangler: f.w, answers: answers({ address: "nope", refPrefix: "a" }), workerDir: dir, confirm: async () => true, log: () => {} })).rejects.toThrow(SetupError);
