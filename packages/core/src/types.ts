@@ -2,6 +2,20 @@ export type TicketStatus = "new" | "open" | "pending" | "on_hold" | "solved" | "
 export type TicketPriority = "low" | "normal" | "high" | "urgent";
 export type MessageDirection = "inbound" | "outbound" | "note";
 
+export type AgentRole = "admin" | "agent";
+
+export interface Agent {
+  id: string;
+  email: string;
+  name: string;
+  role: AgentRole;
+  active: boolean;
+  createdAt: number;
+}
+
+export const TICKET_STATUSES: TicketStatus[] = ["new", "open", "pending", "on_hold", "solved", "closed"];
+export const TICKET_PRIORITIES: TicketPriority[] = ["low", "normal", "high", "urgent"];
+
 export interface Mailbox {
   id: string;
   address: string;

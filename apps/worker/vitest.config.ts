@@ -18,6 +18,8 @@ export default defineConfig(async () => {
             GITHUB_TOKEN: "test-gh-token",
             WEBHOOK_URL: "https://hooks.test/helpdesk",
             WEBHOOK_SECRET: "test-webhook-secret",
+            ACCESS_TEAM_DOMAIN: "acme-test",
+            ACCESS_AUD: "test-aud",
           },
         },
       }),
