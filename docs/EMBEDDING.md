@@ -8,6 +8,23 @@ The help desk can run **headless** inside an existing product. Your app keeps it
  browser ──► your app ──► your API ─────────┘  X-Helpdesk-Service-Key + X-Helpdesk-Principal
 ```
 
+## 0. Quick start: `cf-helpdesk init`
+
+From this repo (until the packages are published), pointed at your project:
+
+```bash
+npm run cli -- init --cwd ../your-app --db planetscale --table-prefix hd_
+```
+
+This writes:
+- `helpdesk/`: a small Worker package (`createHelpdesk`, config, wrangler.jsonc with `TABLE_PREFIX`, `TRUSTED_PRINCIPAL=on` and `workers_dev: false`) plus `README.md` with the deploy steps;
+- `helpdesk/migrations/<dialect>/*.sql`: the prefixed schema, which you apply with your own process;
+- `<your prisma folder>/helpdesk.prisma`: generated models, so `prisma db push` keeps the tables. This is for MySQL/PlanetScale, when a single `schema.prisma` is found; otherwise pass `--prisma-dir`.
+
+Re-run `init` after upgrading. Generated files are refreshed; the files you edit are kept (`--force` overwrites them). `npm run cli -- migrate --driver mysql --table-prefix hd_ [--record-only]` applies or records the SQL.
+
+Sections 1–6 explain what `init` sets up. [examples/tanstack-start](../examples/tanstack-start) is a working host app.
+
 ## 1. The help desk Worker
 
 The Worker is a library: `@cf-helpdesk/worker`. Your Worker's entry point is three lines:
@@ -45,12 +62,14 @@ Give every help desk table and index a prefix so the help desk can't collide wit
 
 ### Prisma users: protect the tables
 
-`prisma db push` (and `migrate dev` with a reset) **drops tables that aren't in `schema.prisma`**. A deploy request from such a branch carries the drop to production. Until `cf-helpdesk init` generates the models for you (phase H2), add them yourself:
+`prisma db push` (and `migrate dev` with a reset) **drops tables that aren't in `schema.prisma`**. A deploy request from such a branch carries the drop to production. `cf-helpdesk init` therefore writes `helpdesk.prisma` next to your schema.
 
-1. Use a multi-file schema (`prismaSchemaFolder`).
-2. Run `prisma db pull` against a branch that has the `hd_*` tables.
-3. Move the `hd_*` models into `prisma/helpdesk.prisma`. Keep their `@@map("hd_…")` names.
-4. Treat them as **read-only** from Prisma (for reports and joins). Make every write through the help desk API, which keeps events, counters and threading consistent.
+- The file is generated from the same migration definitions as the SQL. CI checks it on MySQL with Prisma 6:
+  - **Without the file**, `prisma migrate diff` would drop `hd_tickets`.
+  - **With it**, `db push` changes nothing, and the diff against a migrated database is empty.
+- Prisma must load the **whole folder**, as a multi-file schema (Prisma 6.6+). Use `--schema prisma` or `"prisma": { "schema": "prisma" }` in package.json.
+- The models are **read-only** from Prisma (for reports and joins). Make every write through the help desk API, which keeps events, counters and threading consistent.
+- Column types, unique/index names and nullability match the database exactly. Model names get a prefix (`HdTickets`; change it with `--model-prefix`).
 
 ## 3. Calling the API from your app: the trusted principal
 
@@ -70,7 +89,37 @@ In your app's `wrangler.jsonc`, bind the help desk:
 "services": [{ "binding": "HELPDESK", "service": "cf-helpdesk" }]
 ```
 
-Then forward requests from your API (Hono example):
+Then forward requests from your API. `forwardToHelpdesk()` from `@cf-helpdesk/client/server` does it for any Request/Response framework (Hono, TanStack Start, Next.js…). It also drops client-sent identity headers and cookies:
+
+```ts
+import { forwardToHelpdesk } from "@cf-helpdesk/client/server";
+
+app.all("/api/v1/helpdesk/*", (c) =>
+  forwardToHelpdesk(c.req.raw, {
+    target: c.env.HELPDESK,                        // the service binding
+    serviceKey: c.env.HELPDESK_SERVICE_KEY,
+    mountPath: "/api/v1/helpdesk",                 // ↦ the help desk's /api
+    identity: {
+      externalId: c.get("user").id,
+      email: c.get("user").email,
+      name: c.get("user").name,
+      role: c.get("user").role === "admin" ? "admin" : "agent",
+      partition: c.get("user").role === "admin" ? null : `company:${c.get("companyId")}`,
+    },
+  }),
+);
+```
+
+In the browser (or on your server), use the typed client against that mount:
+
+```ts
+import { createHelpdeskClient } from "@cf-helpdesk/client";
+const helpdesk = createHelpdeskClient({ baseUrl: "/api/v1/helpdesk" });
+const { tickets } = await helpdesk.tickets.list({ status: ["new", "open"], assignee: "me" });
+await helpdesk.tickets.reply("ACME-000123", { text: "On it!", idempotencyKey: crypto.randomUUID() });
+```
+
+The same thing written by hand (Hono):
 
 ```ts
 app.all("/api/v1/helpdesk/*", async (c) => {

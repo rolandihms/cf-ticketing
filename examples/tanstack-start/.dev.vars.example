@@ -1,0 +1,2 @@
+# Copy to .dev.vars. Must equal the help desk Worker's HELPDESK_SERVICE_KEY (apps/worker/.dev.vars).
+HELPDESK_SERVICE_KEY=dev-service-key
