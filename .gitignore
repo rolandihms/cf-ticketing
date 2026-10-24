@@ -5,3 +5,4 @@ dist/
 !.dev.vars.example
 .spike-out/
 apps/worker/wrangler.*.jsonc
+apps/worker/.helpdesk/
