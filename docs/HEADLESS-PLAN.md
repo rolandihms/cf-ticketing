@@ -68,7 +68,15 @@ Factory, prefixing, partitions, trusted principal, agent events and attachments 
 5. **Events from agent actions.** Run the plugin bus inside API requests and add `ticket.replied`, `ticket.assigned` and `ticket.status_changed`, for Realty notifications and webhooks.
 6. **Attachments API.** `GET /api/attachments/:id` streams from R2, with the partition check.
 
-### H2: SDK, CLI and reference app
+### H2: SDK, CLI and reference app ✅ built (branch `feat/headless-h2`)
+
+Built:
+- `@cf-helpdesk/client` (plus `/server`: `forwardToHelpdesk`, `trustedHeaders`);
+- `cf-helpdesk init` and `cf-helpdesk migrate`;
+- the generated Prisma models, verified on MySQL with Prisma 6;
+- `examples/tanstack-start` with a headless-Chrome E2E in CI.
+
+Not yet: `@cf-helpdesk/hono` (`forwardToHelpdesk` covers it in about 5 lines); npm publishing (packages are still private; `init --deps file` links a checkout).
 - **`@cf-helpdesk/client`**: a framework-agnostic typed fetch client (types from the API's zod schemas). It works in browsers, Workers and Node.
 - **`@cf-helpdesk/hono`**: `helpdeskProxy({ binding, resolvePrincipal })`. Other frameworks use the client plus a short proxy example.
 - **`cf-helpdesk` CLI** (one bin):
