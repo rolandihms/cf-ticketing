@@ -1,7 +1,7 @@
 // Behaviour every HelpdeskRepo implementation must satisfy. Run per dialect by *.test.ts files.
 import type { Mailbox } from "@cf-helpdesk/core";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { HelpdeskRepo, NewMessage } from "../src/repo";
+import type { HelpdeskRepo, NewMessage, SqlRepo } from "../src/repo";
 
 export function inbound(ingestKey: string, overrides: Partial<NewMessage> = {}): NewMessage {
   return {
@@ -161,6 +161,110 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
       const second = await repo.saveLink(ticket.id, { provider: "github", externalId: "acme/app#8", url: null, state: "open" });
       expect(second).toEqual(first);
       expect(first).toMatchObject({ externalId: "acme/app#7", data: { number: 7 } });
+    });
+
+    it("manages agents (idempotent create by email, update, deactivate)", async () => {
+      const a = await repo.createAgent({ email: "Ann@Acme.test", name: "Ann", role: "admin" });
+      const again = await repo.createAgent({ email: "ann@acme.test", name: "Other", role: "agent" });
+      expect(again).toEqual(a);
+      expect(a).toMatchObject({ email: "ann@acme.test", role: "admin", active: true });
+      expect(await repo.updateAgent(a.id, { active: false, role: "agent" })).toMatchObject({ active: false, role: "agent" });
+      expect((await repo.getAgentByEmail("ANN@acme.test"))?.id).toBe(a.id);
+      expect((await repo.listAgents()).map((x) => x.email)).toEqual(["ann@acme.test"]);
+      expect(await repo.updateAgent("nope", { name: "x" })).toBeNull();
+    });
+
+    it("updates status/priority/assignee atomically with one event per change", async () => {
+      const c = await repo.upsertContact("jane@cust.example", null);
+      const agent = await repo.createAgent({ email: "bob@acme.test", name: "Bob", role: "agent" });
+      const { ticket } = await repo.createTicketWithFirstMessage({ mailbox, requesterId: c.id, subject: "a", sourceIngestKey: key(1), message: inbound(key(1)), attachments: [] });
+      const solved = await repo.updateTicket(ticket, { status: "solved", priority: "high", assigneeId: agent.id }, `agent:${agent.id}`);
+      expect(solved).toMatchObject({ status: "solved", priority: "high", assigneeId: agent.id });
+      const unchanged = await repo.updateTicket(solved, { status: "solved" }, "x");
+      expect(unchanged.updatedAt).toBe(solved.updatedAt);
+      await repo.updateTicket(solved, { assigneeId: null }, "x");
+      const d = (await repo.getTicketDetail(ticket.ref))!;
+      expect(d.ticket.assigneeId).toBeNull();
+      expect(d.events.map((e) => e.type)).toEqual(["ticket.created", "ticket.status_changed", "ticket.priority_changed", "ticket.assigned", "ticket.assigned"]);
+      const closedAt = await (repo as unknown as SqlRepo).db.selectFrom("tickets").select("closed_at").where("id", "=", ticket.id).executeTakeFirstOrThrow();
+      expect(Number(closedAt.closed_at)).toBeGreaterThan(0);
+    });
+
+    it("rejects stale updates (compare-and-set) without writing events", async () => {
+      const c = await repo.upsertContact("jane@cust.example", null);
+      const { ticket } = await repo.createTicketWithFirstMessage({ mailbox, requesterId: c.id, subject: "a", sourceIngestKey: key(1), message: inbound(key(1)), attachments: [] });
+      await repo.updateTicket(ticket, { status: "open" }, "alice");
+      await expect(repo.updateTicket(ticket, { status: "solved" }, "bob")).rejects.toThrow(/changed by someone else/);
+      const d = (await repo.getTicketDetail(ticket.ref))!;
+      expect(d.ticket.status).toBe("open");
+      expect(d.events.filter((e) => e.type === "ticket.status_changed").map((e) => e.actor)).toEqual(["alice"]);
+      // Unrelated fields don't conflict: a stale snapshot can still change priority.
+      expect((await repo.updateTicket(ticket, { priority: "high" }, "bob")).priority).toBe("high");
+    });
+
+    it("reserves outbound messages idempotently, then completes or discards them", async () => {
+      const c = await repo.upsertContact("jane@cust.example", null);
+      const { ticket } = await repo.createTicketWithFirstMessage({ mailbox, requesterId: c.id, subject: "a", sourceIngestKey: key(1), message: inbound(key(1)), attachments: [] });
+      const out = inbound("", { direction: "outbound", kind: "agent_reply", ingest_key: key(50), message_id_hdr: "<r1@acme>" });
+      const first = await repo.reserveOutbound(ticket, out);
+      const again = await repo.reserveOutbound(ticket, out);
+      expect(first.existing).toBe(false);
+      expect(again).toEqual({ messageId: first.messageId, existing: true });
+      await repo.completeOutbound(ticket, first.messageId, "<prov@acme>", "agent:x");
+      expect((await repo.getMessage(first.messageId))!.provider_msg_id).toBe("<prov@acme>");
+
+      const failed = await repo.reserveOutbound(ticket, inbound("", { direction: "outbound", kind: "agent_reply", ingest_key: null }));
+      await repo.discardMessage(failed.messageId);
+      expect(await repo.getMessage(failed.messageId)).toBeNull();
+      const types = (await repo.getTicketDetail(ticket.ref))!.events.map((e) => e.type);
+      expect(types.filter((x) => x === "message.outbound")).toHaveLength(1);
+    });
+
+    it("counts active admins", async () => {
+      const a = await repo.createAgent({ email: "a@acme.test", name: "A", role: "admin" });
+      await repo.createAgent({ email: "b@acme.test", name: "B", role: "agent" });
+      expect(await repo.countActiveAdmins()).toBe(1);
+      await repo.updateAgent(a.id, { active: false });
+      expect(await repo.countActiveAdmins()).toBe(0);
+    });
+
+    it("a customer reply reopens pending/solved/closed tickets", async () => {
+      const c = await repo.upsertContact("jane@cust.example", null);
+      const { ticket } = await repo.createTicketWithFirstMessage({ mailbox, requesterId: c.id, subject: "a", sourceIngestKey: key(1), message: inbound(key(1)), attachments: [] });
+      const pending = await repo.updateTicket(ticket, { status: "pending" }, "x");
+      await repo.appendMessage({ ticket: pending, reopen: true, actor: "contact", attachments: [], message: inbound(key(2)) });
+      expect((await repo.getTicket(ticket.id))!.status).toBe("open");
+    });
+
+    it("filters tickets by status, assignee, category and text (LIKE-safe)", async () => {
+      const c = await repo.upsertContact("jane@cust.example", null);
+      const agent = await repo.createAgent({ email: "bob@acme.test", name: "Bob", role: "agent" });
+      const mk = async (i: number, subject: string) =>
+        (await repo.createTicketWithFirstMessage({ mailbox, requesterId: c.id, subject, sourceIngestKey: key(i), message: inbound(key(i)), attachments: [] })).ticket;
+      const t1 = await mk(1, "Printer 100% broken");
+      const t2 = await mk(2, "Invoice question");
+      await mk(3, "Printer jam");
+      await repo.updateTicket(t1, { assigneeId: agent.id, status: "open" }, "x");
+      await repo.saveClassification({ ticket: t2, messageId: "m", outcome: { category: "billing", confidence: 0.9, codeRelated: false, acceptedBy: "rules", attempts: [] } });
+
+      const refs = async (f: Parameters<HelpdeskRepo["listTickets"]>[0]) => (await repo.listTickets(f)).map((t) => t.number).sort();
+      expect(await refs({ limit: 10, statuses: ["open"] })).toEqual([1]);
+      expect(await refs({ limit: 10, statuses: ["new", "open"] })).toEqual([1, 2, 3]);
+      expect(await refs({ limit: 10, assigneeId: agent.id })).toEqual([1]);
+      expect(await refs({ limit: 10, assigneeId: null })).toEqual([2, 3]);
+      expect(await refs({ limit: 10, category: "billing" })).toEqual([2]);
+      expect(await refs({ limit: 10, q: "PRINTER" })).toEqual([1, 3]);
+      expect(await refs({ limit: 10, q: "100%" })).toEqual([1]); // % is literal, not a wildcard
+      expect(await refs({ limit: 10, q: "acme-000002" })).toEqual([2]);
+    });
+
+    it("computes threading headers from customer and outbound messages, skipping notes", async () => {
+      const c = await repo.upsertContact("jane@cust.example", null);
+      const { ticket } = await repo.createTicketWithFirstMessage({ mailbox, requesterId: c.id, subject: "a", sourceIngestKey: key(1), message: inbound(key(1), { message_id_hdr: "<c1@cust>" }), attachments: [] });
+      await repo.appendMessage({ ticket, reopen: false, actor: "ack", attachments: [], message: inbound("", { direction: "outbound", kind: "ack", ingest_key: null, message_id_hdr: "<ours@acme>", provider_msg_id: "<prov@acme>" }) });
+      await repo.appendMessage({ ticket, reopen: false, actor: "a", attachments: [], message: inbound("", { direction: "note", kind: "note", ingest_key: null, message_id_hdr: null }) });
+      await repo.appendMessage({ ticket, reopen: true, actor: "c", attachments: [], message: inbound(key(2), { message_id_hdr: "<c2@cust>", from_addr: "jane.alt@cust.example" }) });
+      expect(await repo.getThreading(ticket.id)).toEqual({ inReplyTo: "<c2@cust>", references: ["<c1@cust>", "<prov@acme>", "<c2@cust>"], lastCustomerEmail: "jane.alt@cust.example" });
     });
 
     it("lists tickets with cursor pagination", async () => {

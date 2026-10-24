@@ -63,6 +63,10 @@
     // GitHub issues for code-related bug tickets, e.g. "your-org/your-app" (private repos only by default).
     "GITHUB_REPO": "",
     // Signed webhook to another system on github.issue.created / ticket.classified, e.g. "https://ops.example/hooks".
-    "WEBHOOK_URL": ""
+    "WEBHOOK_URL": "",
+    // Agent sign-in via Cloudflare Access (docs/AGENT-API.md). Team domain, e.g. "acme" or
+    // "acme.cloudflareaccess.com", and the Access application's AUD tag. Empty = Access login off.
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": ""
   }
 }

@@ -1,11 +1,11 @@
-import { type ClassificationOutcome, formatRef, type Mailbox, type Ticket, type TicketLink, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
-import { type InsertQueryBuilder, type InsertResult, Kysely, sql, type Transaction } from "kysely";
+import { type Agent, type AgentRole, type ClassificationOutcome, formatRef, type Mailbox, type Ticket, type TicketLink, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
+import { type Compilable, type InsertQueryBuilder, type InsertResult, Kysely, sql, type Transaction } from "kysely";
 import { monotonicFactory } from "ulidx";
 
 // Monotonic: ids created in the same millisecond still sort in creation order.
 const ulid = monotonicFactory();
 import { toD1Statement } from "./d1-dialect";
-import type { Database, MessagesTable, TicketClassificationsTable, TicketEventsTable, TicketsTable } from "./schema";
+import type { AgentsTable, Database, MailboxesTable, MessagesTable, TicketClassificationsTable, TicketEventsTable, TicketsTable } from "./schema";
 import type { SqlDialect } from "./types";
 
 export type NewMessage = Omit<MessagesTable, "id" | "ticket_id" | "mailbox_id" | "created_at">;
@@ -29,6 +29,32 @@ export interface TicketDetail {
   messages: MessagesTable[];
   events: TicketEventsTable[];
   classifications: TicketClassificationsTable[];
+}
+
+/** The ticket changed since the caller read it (compare-and-set failed). */
+export class TicketConflictError extends Error {}
+
+export interface TicketFilter {
+  /** One or more statuses. */
+  statuses?: string[];
+  /** Agent id, or null for unassigned tickets. Omit for any. */
+  assigneeId?: string | null;
+  category?: string;
+  mailboxId?: string;
+  /** Case-insensitive substring of the subject or ref. */
+  q?: string;
+  limit: number;
+  /** Ticket id to continue after (ids are ULIDs, newest first). */
+  cursor?: string;
+  /** @deprecated use statuses */
+  status?: string;
+}
+
+export interface TicketPatch {
+  status?: TicketStatus;
+  priority?: TicketPriority;
+  /** Agent id, or null to unassign. */
+  assigneeId?: string | null;
 }
 
 export interface SaveClassificationInput {
@@ -77,7 +103,36 @@ export interface HelpdeskRepo {
   getLink(ticketId: string, provider: string): Promise<TicketLink | null>;
   /** Insert-if-absent per (ticket, provider) — the idempotency record for external objects. */
   saveLink(ticketId: string, link: TicketLink): Promise<TicketLink>;
-  listTickets(filter: { status?: string; mailboxId?: string; limit: number; cursor?: string }): Promise<Ticket[]>;
+  listTickets(filter: TicketFilter): Promise<Ticket[]>;
+  listMailboxes(): Promise<Mailbox[]>;
+  // ---- agents ----
+  listAgents(): Promise<Agent[]>;
+  getAgent(id: string): Promise<Agent | null>;
+  getAgentByEmail(email: string): Promise<Agent | null>;
+  /** Insert-if-absent by email; returns the stored agent (existing one wins). */
+  createAgent(input: { email: string; name: string; role: AgentRole }): Promise<Agent>;
+  updateAgent(id: string, patch: { name?: string; role?: AgentRole; active?: boolean }): Promise<Agent | null>;
+  // ---- agent actions ----
+  /**
+   * Change status / priority / assignee atomically and record one event per change.
+   * `closed_at` follows the status (set on solved/closed, cleared otherwise). Returns the updated ticket.
+   * Compare-and-set: throws TicketConflictError if a changed field no longer holds the caller's value.
+   */
+  updateTicket(ticket: Ticket, patch: TicketPatch, actor: string): Promise<Ticket>;
+  countActiveAdmins(): Promise<number>;
+  /**
+   * Reserve an outbound message row *before* sending, so a crash after sending can't cause a resend.
+   * With an ingest_key (idempotency key), an existing row is returned instead (`existing: true`).
+   */
+  reserveOutbound(ticket: Ticket, message: NewMessage): Promise<{ messageId: string; existing: boolean }>;
+  /** Mark a reserved outbound message as sent: provider id, ticket touch and event, atomically. */
+  completeOutbound(ticket: Ticket, messageId: string, providerMsgId: string | null, actor: string): Promise<void>;
+  /** Remove a reserved message whose send failed. */
+  discardMessage(messageId: string): Promise<void>;
+  /** Message-IDs for threading an outbound reply: the latest customer message and the full chain. */
+  getThreading(ticketId: string): Promise<{ inReplyTo: string | null; references: string[]; lastCustomerEmail: string | null }>;
+  findMessageByIngestKey(key: string): Promise<MessagesTable | null>;
+  getMessage(id: string): Promise<MessagesTable | null>;
   /** Release connections (no-op for D1). Call when the request/step is done. */
   close(): Promise<void>;
 }
@@ -102,6 +157,14 @@ function toTicket(r: TicketsTable): Ticket {
     codeRelated: r.code_related == null ? null : Number(r.code_related) === 1,
     summary: r.summary ?? null,
   };
+}
+
+function toAgent(r: AgentsTable): Agent {
+  return { id: r.id, email: r.email, name: r.name, role: r.role as AgentRole, active: Number(r.active) === 1, createdAt: Number(r.created_at) };
+}
+
+function toMailbox(r: MailboxesTable): Mailbox {
+  return { id: r.id, address: r.address, name: r.name, refPrefix: r.ref_prefix, fromName: r.from_name };
 }
 
 const milli = (x: number) => Math.round(Math.min(1, Math.max(0, x)) * 1000);
@@ -317,13 +380,186 @@ export class SqlRepo implements HelpdeskRepo {
     return stored;
   }
 
-  async listTickets(filter: { status?: string; mailboxId?: string; limit: number; cursor?: string }) {
+  async listTickets(filter: TicketFilter) {
     let q = this.db.selectFrom("tickets").selectAll().orderBy("id", "desc").limit(Math.max(1, Math.min(filter.limit || 25, 100)));
-    if (filter.status) q = q.where("status", "=", filter.status);
+    const statuses = filter.statuses ?? (filter.status ? [filter.status] : undefined);
+    if (statuses?.length) q = q.where("status", "in", statuses);
+    if (filter.assigneeId === null) q = q.where("assignee_id", "is", null);
+    else if (filter.assigneeId) q = q.where("assignee_id", "=", filter.assigneeId);
+    if (filter.category) q = q.where("category", "=", filter.category);
     if (filter.mailboxId) q = q.where("mailbox_id", "=", filter.mailboxId);
+    if (filter.q) {
+      // "!" as the LIKE escape character: a backslash would need different quoting on MySQL.
+      const like = `%${filter.q.toLowerCase().replace(/[!%_]/g, (c) => `!${c}`)}%`;
+      q = q.where((eb) =>
+        eb.or([
+          eb(eb.fn("lower", ["subject"]), "like", sql<string>`${like} escape '!'`),
+          eb(eb.fn("lower", ["ref"]), "like", sql<string>`${like} escape '!'`),
+        ]),
+      );
+    }
     if (filter.cursor) q = q.where("id", "<", filter.cursor);
     return (await q.execute()).map(toTicket);
   }
+
+  async listMailboxes() {
+    return (await this.db.selectFrom("mailboxes").selectAll().orderBy("address").execute()).map(toMailbox);
+  }
+
+  async listAgents() {
+    return (await this.db.selectFrom("agents").selectAll().orderBy("email").execute()).map(toAgent);
+  }
+
+  async getAgent(id: string) {
+    const r = await this.db.selectFrom("agents").selectAll().where("id", "=", id).executeTakeFirst();
+    return r ? toAgent(r) : null;
+  }
+
+  async getAgentByEmail(email: string) {
+    const r = await this.db.selectFrom("agents").selectAll().where("email", "=", email.toLowerCase()).executeTakeFirst();
+    return r ? toAgent(r) : null;
+  }
+
+  async createAgent(input: { email: string; name: string; role: AgentRole }) {
+    const email = input.email.toLowerCase();
+    await this.insertIgnore(
+      this.db.insertInto("agents").values({ id: ulid(), email, name: input.name, role: input.role, active: 1, created_at: now() }),
+      "email",
+    ).execute();
+    return (await this.getAgentByEmail(email))!;
+  }
+
+  async updateAgent(id: string, patch: { name?: string; role?: AgentRole; active?: boolean }) {
+    const set: Record<string, unknown> = {};
+    if (patch.name !== undefined) set.name = patch.name;
+    if (patch.role !== undefined) set.role = patch.role;
+    if (patch.active !== undefined) set.active = patch.active ? 1 : 0;
+    if (Object.keys(set).length) await this.db.updateTable("agents").set(set).where("id", "=", id).execute();
+    return this.getAgent(id);
+  }
+
+  async updateTicket(ticket: Ticket, patch: TicketPatch, actor: string): Promise<Ticket> {
+    let t = now();
+    if (t <= ticket.updatedAt) t = ticket.updatedAt + 1;
+    const set: Record<string, unknown> = {};
+    const events: ReturnType<SqlRepo["eventRow"]>[] = [];
+    // Compare-and-set: each changed field must still hold the value the caller saw.
+    let update = this.db.updateTable("tickets").where("id", "=", ticket.id);
+    if (patch.status !== undefined && patch.status !== ticket.status) {
+      set.status = patch.status;
+      set.closed_at = patch.status === "solved" || patch.status === "closed" ? t : null;
+      update = update.where("status", "=", ticket.status);
+      events.push(this.eventRow(ticket.id, "ticket.status_changed", actor, { from: ticket.status, to: patch.status }, t));
+    }
+    if (patch.priority !== undefined && patch.priority !== ticket.priority) {
+      set.priority = patch.priority;
+      update = update.where("priority", "=", ticket.priority);
+      events.push(this.eventRow(ticket.id, "ticket.priority_changed", actor, { from: ticket.priority, to: patch.priority }, t));
+    }
+    if (patch.assigneeId !== undefined && patch.assigneeId !== ticket.assigneeId) {
+      set.assignee_id = patch.assigneeId;
+      update = ticket.assigneeId === null ? update.where("assignee_id", "is", null) : update.where("assignee_id", "=", ticket.assigneeId);
+      events.push(this.eventRow(ticket.id, "ticket.assigned", actor, { from: ticket.assigneeId, to: patch.assigneeId }, t));
+    }
+    if (!events.length) return (await this.getTicket(ticket.id))!;
+    set.updated_at = t;
+    await this.atomic([
+      update.set(set),
+      // Events are written only if the guarded UPDATE matched (row now carries updated_at = t).
+      ...events.map((e) =>
+        this.db
+          .insertInto("ticket_events")
+          .columns(["id", "ticket_id", "type", "actor", "data_json", "created_at"])
+          .expression(
+            this.db
+              .selectFrom("tickets")
+              .select((eb) => [
+                eb.val(e.id).as("id"),
+                eb.val(e.ticket_id).as("ticket_id"),
+                eb.val(e.type).as("type"),
+                eb.val(e.actor).as("actor"),
+                eb.val(e.data_json).as("data_json"),
+                eb.val(e.created_at).as("created_at"),
+              ])
+              .where("id", "=", ticket.id)
+              .where("updated_at", "=", t),
+          ),
+      ),
+    ]);
+    const updated = (await this.getTicket(ticket.id))!;
+    if (updated.updatedAt !== t) throw new TicketConflictError(`ticket ${ticket.ref} was changed by someone else; reload and retry`);
+    return updated;
+  }
+
+  async countActiveAdmins() {
+    const r = await this.db
+      .selectFrom("agents")
+      .select((eb) => eb.fn.countAll<number>().as("n"))
+      .where("role", "=", "admin")
+      .where("active", "=", 1)
+      .executeTakeFirstOrThrow();
+    return Number(r.n);
+  }
+
+  async reserveOutbound(ticket: Ticket, message: NewMessage) {
+    const id = ulid();
+    const row = this.messageRow(ticket.mailboxId, ticket.id, id, message, now());
+    if (message.ingest_key) {
+      await this.insertIgnore(this.db.insertInto("messages").values(row), "ingest_key").execute();
+      const stored = (await this.findMessageByIngestKey(message.ingest_key))!;
+      return { messageId: stored.id, existing: stored.id !== id };
+    }
+    await this.db.insertInto("messages").values(row).execute();
+    return { messageId: id, existing: false };
+  }
+
+  async completeOutbound(ticket: Ticket, messageId: string, providerMsgId: string | null, actor: string) {
+    const t = now();
+    await this.atomic([
+      this.db.updateTable("messages").set({ provider_msg_id: providerMsgId }).where("id", "=", messageId),
+      this.db.updateTable("tickets").set({ updated_at: t }).where("id", "=", ticket.id),
+      this.db.insertInto("ticket_events").values(this.eventRow(ticket.id, "message.outbound", actor, { messageId, kind: "agent_reply", reopened: false }, t)),
+    ]);
+  }
+
+  async discardMessage(messageId: string) {
+    await this.db.deleteFrom("messages").where("id", "=", messageId).execute();
+  }
+
+  async getThreading(ticketId: string) {
+    const rows = await this.db
+      .selectFrom("messages")
+      .select(["direction", "message_id_hdr", "provider_msg_id", "from_addr"])
+      .where("ticket_id", "=", ticketId)
+      .where("direction", "!=", "note")
+      .orderBy("created_at")
+      .orderBy("id")
+      .execute();
+    const references: string[] = [];
+    for (const r of rows) {
+      // What the recipient actually saw: the provider id for our outbound mail, the header for inbound.
+      const id = r.direction === "outbound" ? (r.provider_msg_id ?? r.message_id_hdr) : r.message_id_hdr;
+      if (id && !references.includes(id)) references.push(id);
+    }
+    const lastInbound = [...rows].reverse().find((r) => r.direction === "inbound");
+    return { inReplyTo: lastInbound?.message_id_hdr ?? references.at(-1) ?? null, references: references.slice(-20), lastCustomerEmail: lastInbound?.from_addr ?? null };
+  }
+
+  async findMessageByIngestKey(key: string) {
+    return (await this.db.selectFrom("messages").selectAll().where("ingest_key", "=", key).executeTakeFirst()) ?? null;
+  }
+
+  async getMessage(id: string) {
+    return (await this.db.selectFrom("messages").selectAll().where("id", "=", id).executeTakeFirst()) ?? null;
+  }
+
+  /** Run writes atomically: a transaction here, a batch in D1Repo. */
+  protected async atomic(queries: Compilable[]) {
+    await this.db.transaction().execute(async (tx) => {
+      for (const q of queries) await tx.executeQuery(q.compile());
+    });
+  }
+
 
   // ---- row builders shared with D1Repo -------------------------------------------------------
 
@@ -411,8 +647,9 @@ export class SqlRepo implements HelpdeskRepo {
     return this.eventRow(input.ticket.id, `message.${input.message.direction}`, input.actor, { messageId, kind: input.message.kind, reopened }, t);
   }
 
+  /** A customer reply puts tickets that were waiting (pending) or done (solved/closed) back to open. */
   protected shouldReopen(input: Parameters<HelpdeskRepo["appendMessage"]>[0]) {
-    return input.reopen && (input.ticket.status === "solved" || input.ticket.status === "closed");
+    return input.reopen && ["pending", "solved", "closed"].includes(input.ticket.status);
   }
 
   protected ticketTouch(reopen: boolean, t: number) {
@@ -477,6 +714,10 @@ export class D1Repo extends SqlRepo {
       throw new Error(`ref format mismatch: SQL produced ${ticket.ref}, app expects ${formatRef(input.mailbox.refPrefix, ticket.number)}`);
     }
     return { ticket, messageId };
+  }
+
+  protected override async atomic(queries: Compilable[]) {
+    await this.batch(queries);
   }
 
   override async saveClassification(input: SaveClassificationInput) {
