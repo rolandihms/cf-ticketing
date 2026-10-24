@@ -2,6 +2,7 @@
 //   npm run setup                                    (interactive)
 //   npm run setup -- --address support@acme.com --yes   (non-interactive, defaults for the rest)
 import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
@@ -15,11 +16,16 @@ import {
   prefixFromAddress,
   profileFromAddress,
 } from "./answers";
+import { InitError, type InitDb, planInit, writeInit } from "./init";
 import { runSetup, SetupError } from "./setup";
 import { realWrangler } from "./wrangler";
 
 const HELP = `
-CF Helpdesk setup — deploys the help desk to your Cloudflare account.
+CF Helpdesk
+
+  setup      Deploy a standalone help desk to your Cloudflare account (this repo's Worker)
+  init       Add the help desk to an existing project (embedding; docs/EMBEDDING.md)
+  migrate    Apply migrations to Postgres/MySQL (--driver, --url, --table-prefix, --record-only)
 
 Usage: npm run setup -- [options]
 
@@ -39,12 +45,32 @@ Usage: npm run setup -- [options]
   --help
 
 Prerequisites: \`npx wrangler login\`, and the domain must be a zone in your Cloudflare account.
+
+Usage: npm run cli -- init [options]      (from this repo; --cwd points at your project)
+
+  --cwd <path>             Your project's root (default: current directory)
+  --dir <path>             Folder for the help desk Worker, relative to --cwd (default: helpdesk)
+  --table-prefix <p_>      Prefix for the help desk tables in your database (default: hd_)
+  --db <driver>            d1 | postgres | mysql | planetscale (default: planetscale)
+  --worker <name>          Worker name (default: helpdesk)
+  --prisma-dir <path|none> Your Prisma schema folder (default: detected); writes helpdesk.prisma there
+  --model-prefix <Name>    Prisma model name prefix (default: from the table prefix, e.g. Hd)
+  --deps npm|file          Depend on published packages, or on this checkout (default: file in a checkout)
+  --force                  Also overwrite the files meant for editing
 `;
 
 const workerDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../apps/worker");
 const repoRoot = resolve(workerDir, "../..");
 
 async function main() {
+  const command = process.argv[2];
+  if (command === "migrate") {
+    const { runMigrateCli } = await import("@cf-helpdesk/db/node-migrate");
+    process.exitCode = await runMigrateCli(process.argv.slice(3));
+    return;
+  }
+  if (command === "init") return init(process.argv.slice(3));
+
   const { values: f, positionals } = parseArgs({
     allowPositionals: true,
     options: {
@@ -174,6 +200,55 @@ Next:
     } else throw err;
   } finally {
     rl?.close();
+  }
+}
+
+async function init(argv: string[]) {
+  const { values: f } = parseArgs({
+    args: argv,
+    options: {
+      cwd: { type: "string" },
+      dir: { type: "string" },
+      "table-prefix": { type: "string" },
+      db: { type: "string" },
+      worker: { type: "string" },
+      "prisma-dir": { type: "string" },
+      "model-prefix": { type: "string" },
+      deps: { type: "string" },
+      force: { type: "boolean" },
+      help: { type: "boolean" },
+    },
+  });
+  if (f.help) return console.log(HELP);
+  const cwd = resolve(f.cwd ?? process.cwd());
+  const db = (f.db ?? "planetscale") as InitDb;
+  try {
+    if (!["d1", "postgres", "mysql", "planetscale"].includes(db)) throw new InitError("--db must be d1, postgres, mysql or planetscale");
+    const packagesDir = resolve(repoRoot, "packages");
+    const ownVersion = JSON.parse(readFileSync(join(repoRoot, "packages/cli/package.json"), "utf8")).version as string;
+    const depsKind = f.deps ?? (existsSync(join(packagesDir, "worker/package.json")) ? "file" : "npm");
+    const plan = await planInit({
+      cwd,
+      dir: f.dir ?? "helpdesk",
+      tablePrefix: f["table-prefix"] ?? "hd_",
+      db,
+      workerName: f.worker ?? "helpdesk",
+      ...(f["prisma-dir"] !== undefined ? { prismaDir: f["prisma-dir"] } : {}),
+      ...(f["model-prefix"] ? { modelPrefix: f["model-prefix"] } : {}),
+      deps: depsKind === "file" ? { kind: "file", packagesDir } : { kind: "npm", version: ownVersion },
+      templatePath: join(workerDir, "wrangler.jsonc"),
+      force: f.force,
+    });
+    const report = await writeInit(cwd, plan.files, f.force);
+    console.log(`\nCF Helpdesk init → ${cwd}\n`);
+    for (const r of report) console.log(`  ${r.action.padEnd(9)} ${r.path}${r.action === "kept" ? "  (yours; --force to overwrite)" : ""}`);
+    for (const n of plan.notes) console.log(`\n${n}`);
+    console.log(`\nNext: ${join(f.dir ?? "helpdesk", "README.md")}\n`);
+  } catch (err) {
+    if (err instanceof InitError) {
+      console.error(`\n✘ ${err.message}\n`);
+      process.exitCode = 1;
+    } else throw err;
   }
 }
 

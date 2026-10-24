@@ -6,7 +6,8 @@
   "license": "MIT",
   "exports": {
     ".": "./src/index.ts",
-    "./migrations": "./src/migrations-entry.ts"
+    "./migrations": "./src/migrations-entry.ts",
+    "./node-migrate": "./src/node-migrate.ts"
   },
   "scripts": {
     "generate": "tsx scripts/generate.ts",

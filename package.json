@@ -15,7 +15,8 @@
     "deploy": "npm run deploy -w apps/worker",
     "db:generate": "npm run generate -w packages/db",
     "db:migrate": "npm run migrate -w packages/db --",
-    "setup": "npm run setup -w packages/cli --"
+    "setup": "npm run setup -w packages/cli --",
+    "cli": "npm run cli -w packages/cli --"
   },
   "engines": {
     "node": ">=20"
