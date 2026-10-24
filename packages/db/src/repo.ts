@@ -1,4 +1,4 @@
-import { type ClassificationOutcome, formatRef, type Mailbox, type Ticket, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
+import { type ClassificationOutcome, formatRef, type Mailbox, type Ticket, type TicketLink, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
 import { type InsertQueryBuilder, type InsertResult, Kysely, sql, type Transaction } from "kysely";
 import { monotonicFactory } from "ulidx";
 
@@ -74,6 +74,9 @@ export interface HelpdeskRepo {
    * a retried Workflow step replaces the previous rows instead of duplicating them.
    */
   saveClassification(input: SaveClassificationInput): Promise<void>;
+  getLink(ticketId: string, provider: string): Promise<TicketLink | null>;
+  /** Insert-if-absent per (ticket, provider) — the idempotency record for external objects. */
+  saveLink(ticketId: string, link: TicketLink): Promise<TicketLink>;
   listTickets(filter: { status?: string; mailboxId?: string; limit: number; cursor?: string }): Promise<Ticket[]>;
   /** Release connections (no-op for D1). Call when the request/step is done. */
   close(): Promise<void>;
@@ -124,12 +127,13 @@ export class SqlRepo implements HelpdeskRepo {
   /** `INSERT ... do nothing on duplicate key`, per dialect. */
   protected insertIgnore<T extends keyof Database & string>(
     q: InsertQueryBuilder<Database, T, InsertResult>,
-    conflictColumn: keyof Database[T] & string,
+    conflictColumn: (keyof Database[T] & string) | (keyof Database[T] & string)[],
   ) {
+    const cols = Array.isArray(conflictColumn) ? conflictColumn : [conflictColumn];
     return this.dialect === "mysql"
       ? // No-op update instead of INSERT IGNORE, which would also swallow unrelated errors.
-        q.onDuplicateKeyUpdate({ [conflictColumn]: sql.ref(conflictColumn) } as never)
-      : q.onConflict((oc) => oc.column(conflictColumn as never).doNothing());
+        q.onDuplicateKeyUpdate({ [cols[0]!]: sql.ref(cols[0]!) } as never)
+      : q.onConflict((oc) => oc.columns(cols as never).doNothing());
   }
 
   async close() {
@@ -277,6 +281,40 @@ export class SqlRepo implements HelpdeskRepo {
     await this.db.transaction().execute(async (tx) => {
       for (const q of this.classificationWrites(tx, input)) await q.execute();
     });
+  }
+
+  async getLink(ticketId: string, provider: string): Promise<TicketLink | null> {
+    const r = await this.db
+      .selectFrom("ticket_links")
+      .selectAll()
+      .where("ticket_id", "=", ticketId)
+      .where("provider", "=", provider)
+      .executeTakeFirst();
+    return r
+      ? { provider: r.provider, externalId: r.external_id, url: r.url, state: r.state, ...(r.data_json ? { data: JSON.parse(r.data_json) } : {}) }
+      : null;
+  }
+
+  async saveLink(ticketId: string, link: TicketLink): Promise<TicketLink> {
+    const t = now();
+    await this.insertIgnore(
+      this.db.insertInto("ticket_links").values({
+        id: ulid(),
+        ticket_id: ticketId,
+        provider: link.provider,
+        external_id: link.externalId,
+        url: link.url,
+        state: link.state,
+        data_json: link.data ? JSON.stringify(link.data) : null,
+        created_at: t,
+        updated_at: t,
+      }),
+      ["ticket_id", "provider"],
+    ).execute();
+    const stored = await this.getLink(ticketId, link.provider);
+    // Absent only if (provider, external_id) already belongs to another ticket (MySQL swallows that).
+    if (!stored) throw new Error(`${link.provider} ${link.externalId} is already linked to another ticket`);
+    return stored;
   }
 
   async listTickets(filter: { status?: string; mailboxId?: string; limit: number; cursor?: string }) {

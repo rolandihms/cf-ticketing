@@ -266,6 +266,12 @@ export interface Rule {
   from?: RegExp;
 }
 
+/**
+ * Default rules. Only near-certain signals (stack traces, 5xx errors) are confident enough to
+ * short-circuit the cascade. Topic keywords (billing, account) sit below the default `acceptAt`
+ * (0.75): they are hints that are recorded, while the LLM decides. A live test showed why: "Invoice
+ * PDF download returns a blank file" is a bug, not a billing question.
+ */
 export const DEFAULT_RULES: Rule[] = [
   {
     category: "bug",
@@ -281,12 +287,12 @@ export const DEFAULT_RULES: Rule[] = [
   },
   {
     category: "billing",
-    confidence: 0.8,
+    confidence: 0.6,
     patterns: [/\b(?:invoice|refund|charged twice|double charged|billing|receipt|credit card was charged|subscription (?:fee|charge))\b/i],
   },
   {
     category: "account",
-    confidence: 0.8,
+    confidence: 0.6,
     patterns: [/\b(?:reset (?:my )?password|can'?t log ?in|cannot log ?in|locked out|2fa|two[- ]factor|delete my account)\b/i],
   },
 ];
