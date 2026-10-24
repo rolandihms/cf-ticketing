@@ -157,7 +157,7 @@ cf-helpdesk/
   apps/worker/          the deployable Worker: email(), fetch() (Hono API), Workflows
     wrangler.jsonc.example
     helpdesk.config.ts  ← user's plugins & settings
-  scripts/setup.ts      interactive: domain, address, DB driver → creates D1/R2,
+  packages/cli (`npm run setup`)      interactive: domain, address, DB driver → creates D1/R2,
                         enables routing+sending, writes wrangler.jsonc, migrates, deploys
   examples/plugins/     echo/logging plugin, webhook plugin (AI/GitHub later)
   docs/
@@ -177,7 +177,7 @@ Tooling: TypeScript, Vitest + `@cloudflare/vitest-plugin` (renamed from vitest-p
 5. Add the Email Sending ack (threaded headers), plus the `ACK_MODE=reply` fallback.
 6. Add an example plugin and a webhook.
 7. Write tests: unit (parse, guards, threading), integration (vitest-pool-workers), and a local e2e via `/cdn-cgi/local/email`.
-8. Write `scripts/setup.ts`, then deploy to your domain and send a real email end to end.
+8. Write `packages/cli (`npm run setup`)`, then deploy to your domain and send a real email end to end.
 
 **Phase 2: help desk basics.** REST API (list/filter/assign/status/notes/agent reply via Email Sending), Cloudflare Access auth, and the Postgres/MySQL/PlanetScale adapters with a CI matrix (Docker PG/MySQL).
 
@@ -243,4 +243,4 @@ Verdict from the review: **feasible on Cloudflare-native primitives, and Phase 1
 5. Build InboundEmailWorkflow: parse → resolve → persist → ack → plugin hooks.
 6. Add an example logging plugin.
 7. Write tests: unit, integration, and a local e2e via `/cdn-cgi/local/email`.
-8. Write `scripts/setup.ts`. It enables routing and sending, creates D1 and R2, writes the config, migrates, seeds, and deploys. Then do a real end-to-end email test on your domain.
+8. Write `packages/cli (`npm run setup`)`. It enables routing and sending, creates D1 and R2, writes the config, migrates, seeds, and deploys. Then do a real end-to-end email test on your domain.

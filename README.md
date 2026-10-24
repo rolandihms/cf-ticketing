@@ -11,7 +11,25 @@ Email arrives at `support@yourdomain.com` and Cloudflare Email Routing hands it 
 3. Emails the customer an acknowledgement that carries the ticket number.
 4. Runs your **plugins**: AI classification, GitHub issues, webhooks or anything else.
 
-> Status: **Phase 1 in progress.** Inbound → ticket → ack → plugins works locally and is covered by tests. See [docs/PLAN.md](docs/PLAN.md) and [docs/SPIKES.md](docs/SPIKES.md).
+> Status: **working end to end on a live domain.** Inbound email → ticket → acknowledgement → AI classification → optional GitHub issue and webhooks. Next: the agent workflow API, then a UI. See [docs/PLAN.md](docs/PLAN.md).
+
+## Deploy to your Cloudflare account (5 minutes)
+
+```bash
+git clone https://github.com/rolandihms/cf-ticketing && cd cf-ticketing
+npm install
+npx wrangler login
+npm run setup
+```
+
+`npm run setup` asks for your support address and creates everything it needs:
+- Email Routing and Email Sending on your domain
+- a D1 database, an R2 bucket and the Worker
+- the routing rule for your address
+- an API token
+- your first mailbox
+
+It never changes existing MX records without asking. See [docs/SETUP.md](docs/SETUP.md) for options, Postgres/MySQL, and running several help desks on one account.
 
 ## Stack
 
@@ -24,6 +42,7 @@ Email arrives at `support@yourdomain.com` and Cloudflare Email Routing hands it 
 ## Layout
 
 ```
+packages/cli      `npm run setup`: provisions + deploys to your Cloudflare account
 packages/core     runtime-agnostic logic: guards, threading, refs, ingest keys, plugin API
 packages/plugins  optional integrations: GitHub issues, signed webhooks (docs/INTEGRATIONS.md)
 packages/db       portable schema + generated SQL (sqlite/postgres/mysql), repos, migrate CLI
@@ -75,9 +94,6 @@ export const slackNotify: HelpdeskPlugin<Env> = {
 
 Register the plugin in `apps/worker/helpdesk.config.ts`. If a plugin fails, the failure is recorded on the ticket, and the ticket's Workflow keeps going.
 
-## Deploying to your own account
-
-See [docs/SPIKES.md](docs/SPIKES.md#procedure-for-spikes-1-and-3-about-15-minutes-on-a-real-domain) for the manual steps. An interactive `npm run setup` script will automate them.
 
 ## License
 

@@ -1,5 +1,5 @@
 // CF Helpdesk Worker configuration.
-// `npm run setup` (scripts/setup.ts) fills in the placeholders for your account.
+// `npm run setup` (packages/cli) renders a per-account copy: wrangler.<profile>.jsonc.
 // Local dev (`wrangler dev`) works as-is: D1, R2 and Workflows are simulated locally.
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
