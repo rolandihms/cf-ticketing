@@ -23,7 +23,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.2",
     "typescript": "^5.9.0",
-    "vitest": "^4.1.0",
+    "vitest": "^4.1.12",
     "wrangler": "^4.151.0",
     "@cf-helpdesk/client": "*"
   }
