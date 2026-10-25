@@ -4,13 +4,24 @@ import { withTablePrefix } from "./prefix";
 import type { SqlDialect } from "./types";
 
 /** Bookkeeping table; gets the table prefix like every other table ("hd_" → hd__helpdesk_migrations). */
-const TABLE = "_helpdesk_migrations";
+export const MIGRATIONS_TABLE = "_helpdesk_migrations";
+const TABLE = MIGRATIONS_TABLE;
 
 /**
  * Apply pending migrations for Postgres/MySQL (D1 uses `wrangler d1 migrations apply` with the same
  * generated SQL in migrations/sqlite). Works in Node and in Workers: SQL is compiled in-process.
  * Note: MySQL DDL auto-commits, so a failed migration can be partially applied there.
  */
+/** Does `table` (prefixed through db's plugins) exist? Portable: just try to read it. */
+async function tableExists(db: Kysely<any>, table: string) {
+  try {
+    await db.selectFrom(table).select(sql.lit(1).as("x")).limit(1).execute();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function applyMigrations(
   db: Kysely<any>,
   dialect: SqlDialect,
@@ -26,6 +37,13 @@ export async function applyMigrations(
     .addColumn("applied_at", "bigint", (c) => c.notNull())
     .execute();
   const done = new Set((await db.selectFrom(TABLE).select("name").execute()).map((r: { name: string }) => r.name));
+  if (done.size === 0 && !opts.recordOnly && (await tableExists(db, "tickets"))) {
+    throw new Error(
+      "The help desk tables already exist, but no migration is recorded. They were probably created by another tool " +
+        "(e.g. `prisma db push`), which can't set the byte-exact collation the help desk needs. Drop them and migrate again, " +
+        "or, if they were created from this SQL, record them with --record-only.",
+    );
+  }
   const applied: string[] = [];
   for (const m of compileMigrations(dialect, opts.tablePrefix)) {
     if (done.has(m.name)) continue;

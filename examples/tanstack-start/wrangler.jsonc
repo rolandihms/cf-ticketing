@@ -1,0 +1,19 @@
+// Reference UI: a TanStack Start app on Cloudflare that talks to the help desk Worker over a
+// service binding, the way a host app embeds it (docs/EMBEDDING.md).
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "helpdesk-reference-ui",
+  "main": "@tanstack/react-start/server-entry",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // The help desk Worker (apps/worker, or the one `cf-helpdesk init` generated). In local dev,
+  // run it with `wrangler dev` too: the binding connects through the local dev registry.
+  "services": [{ "binding": "HELPDESK", "service": "cf-helpdesk" }],
+
+  "vars": {
+    // Optional: reach the help desk over HTTP instead of the binding (e.g. "http://localhost:8787").
+    "HELPDESK_URL": ""
+  }
+  // Secret: HELPDESK_SERVICE_KEY (same value as the help desk's). Locally: .dev.vars.
+}

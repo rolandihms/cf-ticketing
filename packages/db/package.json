@@ -6,7 +6,8 @@
   "license": "MIT",
   "exports": {
     ".": "./src/index.ts",
-    "./migrations": "./src/migrations-entry.ts"
+    "./migrations": "./src/migrations-entry.ts",
+    "./node-migrate": "./src/node-migrate.ts"
   },
   "scripts": {
     "generate": "tsx scripts/generate.ts",
@@ -29,6 +30,7 @@
     "@electric-sql/pglite": "^0.5.10",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.15.0",
+    "prisma": "^6.19.3",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0"

@@ -1,4 +1,4 @@
-import type { Compilable, Kysely } from "kysely";
+import type { Compilable, Kysely, OperationNodeSource } from "kysely";
 import type { SqlDialect } from "../types";
 import * as m0001 from "./0001_init";
 import * as m0002 from "./0002_provider_msgid_index";
@@ -8,7 +8,8 @@ import * as m0005 from "./0005_agent_partitions";
 
 export interface MigrationDef {
   name: string;
-  up: (db: Kysely<unknown>, d: SqlDialect) => Compilable[];
+  /** Schema builders: compiled to SQL (compile.ts) and read as nodes for the Prisma schema (prisma.ts). */
+  up: (db: Kysely<unknown>, d: SqlDialect) => (Compilable & OperationNodeSource)[];
 }
 
 /** Ordered list of migrations. Append only; never edit a released migration. */
