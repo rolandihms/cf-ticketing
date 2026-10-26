@@ -76,7 +76,7 @@ Built:
 - the generated Prisma models, verified on MySQL with Prisma 6;
 - `examples/tanstack-start` with a headless-Chrome E2E in CI.
 
-Not yet: `@rolandihms/helpdesk-hono` (`forwardToHelpdesk` covers it in about 5 lines); npm publishing (packages are still private; `init --deps file` links a checkout).
+Publishing: `npm run release -- build`, `stage`, then `publish` (scripts/release.mjs) bundles each package to `dist/` and publishes a copy whose `package.json` points there. The sources stay `private`. Not yet: `@rolandihms/helpdesk-hono` (`forwardToHelpdesk` covers it in about 5 lines).
 - **`@rolandihms/helpdesk-client`**: a framework-agnostic typed fetch client (types from the API's zod schemas). It works in browsers, Workers and Node.
 - **`@rolandihms/helpdesk-hono`**: `helpdeskProxy({ binding, resolvePrincipal })`. Other frameworks use the client plus a short proxy example.
 - **`cf-helpdesk` CLI** (one bin):

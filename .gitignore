@@ -6,3 +6,4 @@ dist/
 .spike-out/
 apps/worker/wrangler.*.jsonc
 apps/worker/.helpdesk/
+.release/

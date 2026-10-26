@@ -17,7 +17,15 @@ export { _clearAccessCertCache, parseTrustedIdentity, type Principal, type Trust
 export { workersAI, DEFAULT_WORKERS_AI_MODEL } from "./ai/workers-ai";
 export { loggerPlugin } from "./plugins/logger";
 
-export function createHelpdesk<E extends HelpdeskEnv>(options: HelpdeskOptions<E>) {
+/** What createHelpdesk returns: your Worker's handlers and its Workflow class. */
+export interface Helpdesk<E extends HelpdeskEnv> {
+  fetch(request: Request, env: E, ctx: ExecutionContext): Response | Promise<Response>;
+  email(message: ForwardableEmailMessage, env: E, ctx?: ExecutionContext): Promise<void>;
+  /** Export it from your entry point under the Workflow's class_name in wrangler.jsonc. */
+  InboundEmailWorkflow: new (ctx: ExecutionContext, env: E) => WorkflowEntrypoint<E, HelpdeskWorkflowParams>;
+}
+
+export function createHelpdesk<E extends HelpdeskEnv>(options: HelpdeskOptions<E>): Helpdesk<E> {
   // Plugins and classifiers are typed for the host's Env; internally we only use the HelpdeskEnv part.
   const config = options as unknown as HelpdeskOptions;
   const resolve = <T extends HelpdeskEnv>(env: T): T => (config.tablePrefix === undefined ? env : { ...env, TABLE_PREFIX: config.tablePrefix });

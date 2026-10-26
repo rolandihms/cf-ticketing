@@ -10,18 +10,20 @@ The help desk can run **headless** inside an existing product. Your app keeps it
 
 ## 0. Quick start: `cf-helpdesk init`
 
-From this repo (until the packages are published), pointed at your project:
+In your project's root:
 
 ```bash
-npm run cli -- init --cwd ../your-app --db planetscale --table-prefix hd_
+npx @rolandihms/helpdesk-cli init --db planetscale --table-prefix hd_
 ```
+
+The packages are on npm as `@rolandihms/helpdesk-{core,db,plugins,worker,client,cli}`. They ship ES modules for bundlers (Wrangler, Vite), with TypeScript declarations for `"moduleResolution": "bundler"`. From a checkout of this repo, `npm run cli -- init --cwd ../your-app …` links the checkout instead (`file:` dependencies).
 
 This writes:
 - `helpdesk/`: a small Worker package (`createHelpdesk`, config, wrangler.jsonc with `TABLE_PREFIX`, `TRUSTED_PRINCIPAL=on` and `workers_dev: false`) plus `README.md` with the deploy steps;
 - `helpdesk/migrations/<dialect>/*.sql`: the prefixed schema, which you apply with your own process;
 - `<your prisma folder>/helpdesk.prisma`: generated models, so `prisma db push` keeps the tables. This is for MySQL/PlanetScale, when a single `schema.prisma` is found; otherwise pass `--prisma-dir`.
 
-Re-run `init` after upgrading. Generated files are refreshed; the files you edit are kept (`--force` overwrites them). `npm run cli -- migrate --driver mysql --table-prefix hd_ [--record-only]` applies or records the SQL.
+Re-run `init` after upgrading. Generated files are refreshed; the files you edit are kept (`--force` overwrites them). `npx cf-helpdesk migrate --driver mysql --table-prefix hd_ [--record-only]` applies or records the SQL.
 
 Sections 1–6 explain what `init` sets up. [examples/tanstack-start](../examples/tanstack-start) is a working host app.
 
