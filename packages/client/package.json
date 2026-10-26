@@ -13,9 +13,6 @@
     "test": "vitest run",
     "typecheck": "tsc -p ."
   },
-  "dependencies": {
-    "@rolandihms/helpdesk-core": "*"
-  },
   "devDependencies": {
     "typescript": "^5.9.0",
     "vitest": "^4.1.0"

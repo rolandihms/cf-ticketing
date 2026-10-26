@@ -86,7 +86,16 @@ Not yet: `@rolandihms/helpdesk-hono` (`forwardToHelpdesk` covers it in about 5 l
 - **`examples/tanstack-start`**: an unstyled reference app with 4 routes (inbox, ticket, reply/note, assign) on `client`. It runs in **CI** against the local Worker with a fake trusted principal. This is the end-to-end test of the exact contract Realty uses.
 - Publish to npm with changesets. The scope name is still to be decided.
 
-### H3: Realty On Record integration
+### H3: Realty On Record integration (in progress)
+
+Done locally (portal_he_ui branch `feat/helpdesk`, not pushed):
+- `cf-helpdesk init`, which wrote `helpdesk/` (Worker `realty-helpdesk`, portal-tech account, refs `ROR-…`) and `server/prisma/helpdesk.prisma` (`server/package.json` loads the `prisma` folder);
+- `realty-api` mounts `/api/v1/helpdesk/*` behind `requireAdminMiddleware` and forwards to the `HELPDESK` binding as an unrestricted admin;
+- `@rolandihms/helpdesk-client` has no dependencies, so bun installs it from a `file:` path.
+
+Blocked on approval: npm publish, because portal_he_ui can't push `file:` paths into a checkout that isn't there. Also the R2 bucket, the PlanetScale deploy request, the secrets, the deploys, and Email Routing for support@realtyonrecord.com.
+
+The plan:
 - `cf-helpdesk init` in `portal_he_ui`. Deploy into the portal-tech account with `hd_*` tables in Realty's PlanetScale, applying the SQL by deploy request.
 - `realty-api` mounts `/api/v1/helpdesk/*`: the better-auth session plus company/tenant context becomes the principal, sent through the binding.
 - Realty screens use Realty's own shadcn components with TanStack Query over `@rolandihms/helpdesk-client`. `@rolandihms/helpdesk-react` hooks get extracted from this work only if they prove reusable.

@@ -1,8 +1,56 @@
 // Wire types of the agent API (docs/AGENT-API.md). Tickets, agents and mailboxes are camelCase;
 // messages, events and other rows are returned as stored (snake_case).
-import type { Agent, AgentRole, Mailbox, Ticket, TicketPriority, TicketStatus } from "@rolandihms/helpdesk-core";
+// Declared here rather than imported so the client has no dependencies; test/types.test.ts checks
+// that Ticket, Agent and Mailbox still equal @rolandihms/helpdesk-core's.
 
-export type { Agent, AgentRole, Mailbox, Ticket, TicketPriority, TicketStatus };
+export type TicketStatus = "new" | "open" | "pending" | "on_hold" | "solved" | "closed";
+export type TicketPriority = "low" | "normal" | "high" | "urgent";
+export type AgentRole = "admin" | "agent";
+
+export interface Agent {
+  id: string;
+  email: string;
+  name: string;
+  role: AgentRole;
+  active: boolean;
+  createdAt: number;
+  /** Restricts the agent to one partition (null = all). See docs/EMBEDDING.md. */
+  partition: string | null;
+  /** The host app's user id, for agents provisioned through a trusted principal. */
+  externalId: string | null;
+}
+
+export interface Mailbox {
+  id: string;
+  address: string;
+  name: string;
+  refPrefix: string;
+  fromName: string | null;
+  /** Opaque tenant key chosen by the host app (e.g. "company:42"); copied to the mailbox's tickets. */
+  partition: string | null;
+}
+
+export interface Ticket {
+  id: string;
+  mailboxId: string;
+  number: number;
+  ref: string;
+  subject: string;
+  status: TicketStatus;
+  priority: TicketPriority;
+  requesterId: string;
+  assigneeId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  /** Set by classification; null until classified. */
+  category: string | null;
+  /** 0..1 */
+  categoryConfidence: number | null;
+  codeRelated: boolean | null;
+  summary: string | null;
+  /** From the mailbox at creation. */
+  partition: string | null;
+}
 
 export interface Principal {
   kind: "service" | "agent";
