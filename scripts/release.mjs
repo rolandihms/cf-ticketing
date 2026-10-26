@@ -8,7 +8,7 @@
 // The staged package.json points at dist/ instead, pins the sibling packages to this version, and drops
 // "private"; the sources stay private so a stray `npm publish` in packages/* fails.
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { builtinModules } from "node:module";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -132,7 +132,9 @@ function stagePackage(name, version) {
     publishConfig: { access: "public" },
   };
   if (name === "cli") {
-    out.bin = { "cf-helpdesk": "./dist/index.js" };
+    // No "./": npm publish drops a bin whose path starts with it.
+    out.bin = { "cf-helpdesk": "dist/index.js" };
+    chmodSync(join(to, "dist/index.js"), 0o755);
     // init's wrangler.jsonc template (the CLI reads apps/worker/wrangler.jsonc in a checkout).
     mkdirSync(join(to, "templates"));
     cpSync(join(root, "apps/worker/wrangler.jsonc"), join(to, "templates/wrangler.jsonc"));
