@@ -1,4 +1,4 @@
-import { createHelpdesk } from "@cf-helpdesk/worker";
+import { createHelpdesk } from "@rolandihms/helpdesk-worker";
 import config from "../helpdesk.config";
 
 const helpdesk = createHelpdesk(config);

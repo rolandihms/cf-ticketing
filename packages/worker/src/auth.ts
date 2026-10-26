@@ -1,4 +1,4 @@
-import type { Agent, AgentRole } from "@cf-helpdesk/core";
+import type { Agent, AgentRole } from "@rolandihms/helpdesk-core";
 
 /** Who is calling the API. */
 export interface Principal {

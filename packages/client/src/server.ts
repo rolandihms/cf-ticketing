@@ -1,4 +1,4 @@
-// @cf-helpdesk/client/server: for your app's backend, which has already authenticated the user and
+// @rolandihms/helpdesk-client/server: for your app's backend, which has already authenticated the user and
 // tells the help desk who they are (trusted principal, docs/EMBEDDING.md). Never ship this to a browser.
 
 /** Who the current user is, as your app knows it. */

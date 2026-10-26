@@ -10,8 +10,8 @@ import {
   snapshotConfig,
   type Ticket,
   validateResult,
-} from "@cf-helpdesk/core";
-import { withRepo } from "@cf-helpdesk/db";
+} from "@rolandihms/helpdesk-core";
+import { withRepo } from "@rolandihms/helpdesk-db";
 import type { WorkflowStep } from "cloudflare:workers";
 
 /**

@@ -1,5 +1,5 @@
 // Behaviour every HelpdeskRepo implementation must satisfy. Run per dialect by *.test.ts files.
-import type { Mailbox } from "@cf-helpdesk/core";
+import type { Mailbox } from "@rolandihms/helpdesk-core";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { HelpdeskRepo, NewMessage, SqlRepo } from "../src/repo";
 

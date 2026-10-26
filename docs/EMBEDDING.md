@@ -27,10 +27,10 @@ Sections 1–6 explain what `init` sets up. [examples/tanstack-start](../example
 
 ## 1. The help desk Worker
 
-The Worker is a library: `@cf-helpdesk/worker`. Your Worker's entry point is three lines:
+The Worker is a library: `@rolandihms/helpdesk-worker`. Your Worker's entry point is three lines:
 
 ```ts
-import { createHelpdesk } from "@cf-helpdesk/worker";
+import { createHelpdesk } from "@rolandihms/helpdesk-worker";
 import config from "./helpdesk.config";
 
 const helpdesk = createHelpdesk({ ...config, tablePrefix: "hd_" });
@@ -89,10 +89,10 @@ In your app's `wrangler.jsonc`, bind the help desk:
 "services": [{ "binding": "HELPDESK", "service": "cf-helpdesk" }]
 ```
 
-Then forward requests from your API. `forwardToHelpdesk()` from `@cf-helpdesk/client/server` does it for any Request/Response framework (Hono, TanStack Start, Next.js…). It also drops client-sent identity headers and cookies:
+Then forward requests from your API. `forwardToHelpdesk()` from `@rolandihms/helpdesk-client/server` does it for any Request/Response framework (Hono, TanStack Start, Next.js…). It also drops client-sent identity headers and cookies:
 
 ```ts
-import { forwardToHelpdesk } from "@cf-helpdesk/client/server";
+import { forwardToHelpdesk } from "@rolandihms/helpdesk-client/server";
 
 app.all("/api/v1/helpdesk/*", (c) =>
   forwardToHelpdesk(c.req.raw, {
@@ -113,7 +113,7 @@ app.all("/api/v1/helpdesk/*", (c) =>
 In the browser (or on your server), use the typed client against that mount:
 
 ```ts
-import { createHelpdeskClient } from "@cf-helpdesk/client";
+import { createHelpdeskClient } from "@rolandihms/helpdesk-client";
 const helpdesk = createHelpdeskClient({ baseUrl: "/api/v1/helpdesk" });
 const { tickets } = await helpdesk.tickets.list({ status: ["new", "open"], assignee: "me" });
 await helpdesk.tickets.reply("ACME-000123", { text: "On it!", idempotencyKey: crypto.randomUUID() });

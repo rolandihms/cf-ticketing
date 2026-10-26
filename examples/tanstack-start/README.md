@@ -1,6 +1,6 @@
 # Reference UI (TanStack Start, unstyled)
 
-A minimal agent UI for the headless help desk, built only on [`@cf-helpdesk/client`](../../packages/client). It shows how a host app embeds the help desk ([docs/EMBEDDING.md](../../docs/EMBEDDING.md)):
+A minimal agent UI for the headless help desk, built only on [`@rolandihms/helpdesk-client`](../../packages/client). It shows how a host app embeds the help desk ([docs/EMBEDDING.md](../../docs/EMBEDDING.md)):
 
 ```
 browser ─► this app (TanStack Start on Workers) ─► /api/helpdesk/* ─► forwardToHelpdesk() ─► HELPDESK service binding ─► help desk Worker

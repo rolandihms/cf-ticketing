@@ -2,7 +2,7 @@ import { introspectWorkflow, type WorkflowInstanceModifier } from "cloudflare:te
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src";
-import { D1Dialect, D1Repo } from "@cf-helpdesk/db";
+import { D1Dialect, D1Repo } from "@rolandihms/helpdesk-db";
 import { Kysely } from "kysely";
 import { inboundMessage, rawEmail } from "./helpers";
 

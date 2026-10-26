@@ -124,7 +124,7 @@ The payload contains no customer contact details.
 ### Verifying in the receiver
 
 ```ts
-import { verifyWebhookSignature } from "@cf-helpdesk/plugins"; // or copy the 10 lines below
+import { verifyWebhookSignature } from "@rolandihms/helpdesk-plugins"; // or copy the 10 lines below
 
 export default {
   async fetch(req: Request, env: { WEBHOOK_SECRET: string }) {
@@ -160,7 +160,7 @@ Without the package:
 Any plugin can react to and publish events:
 
 ```ts
-import type { HelpdeskPlugin } from "@cf-helpdesk/core";
+import type { HelpdeskPlugin } from "@rolandihms/helpdesk-core";
 
 export const linear: HelpdeskPlugin<Env> = {
   name: "linear",

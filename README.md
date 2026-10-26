@@ -79,7 +79,7 @@ Run the tests from the repo root with `npm test`. Core unit tests run in Node; t
 ## Writing a plugin
 
 ```ts
-import type { HelpdeskPlugin } from "@cf-helpdesk/core";
+import type { HelpdeskPlugin } from "@rolandihms/helpdesk-core";
 
 export const slackNotify: HelpdeskPlugin<Env> = {
   name: "slack-notify",

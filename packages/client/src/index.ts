@@ -1,4 +1,4 @@
-// @cf-helpdesk/client: a small typed client for the help desk API. No framework, no dependencies at
+// @rolandihms/helpdesk-client: a small typed client for the help desk API. No framework, no dependencies at
 // runtime: works in browsers, Workers and Node. Bring your own UI (docs/EMBEDDING.md).
 import type { Agent, AgentRole, Mailbox, Message, Principal, Ticket, TicketDetail, TicketFilter, TicketPage, TicketPatch, TicketStatus } from "./types";
 

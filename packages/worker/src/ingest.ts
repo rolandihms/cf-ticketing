@@ -1,6 +1,6 @@
-import type { GuardResult, InboundMessageMeta, Mailbox, Ticket } from "@cf-helpdesk/core";
-import { findRefsInSubject } from "@cf-helpdesk/core";
-import type { HelpdeskRepo, NewMessage } from "@cf-helpdesk/db";
+import type { GuardResult, InboundMessageMeta, Mailbox, Ticket } from "@rolandihms/helpdesk-core";
+import { findRefsInSubject } from "@rolandihms/helpdesk-core";
+import type { HelpdeskRepo, NewMessage } from "@rolandihms/helpdesk-db";
 
 export interface IngestResult {
   ticket: Ticket;

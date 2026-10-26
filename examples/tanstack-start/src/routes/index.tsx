@@ -1,4 +1,4 @@
-import type { TicketFilter, TicketStatus } from "@cf-helpdesk/client";
+import type { TicketFilter, TicketStatus } from "@rolandihms/helpdesk-client";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { helpdesk } from "../lib/helpdesk";

@@ -71,14 +71,14 @@ Factory, prefixing, partitions, trusted principal, agent events and attachments 
 ### H2: SDK, CLI and reference app ✅ built (branch `feat/headless-h2`)
 
 Built:
-- `@cf-helpdesk/client` (plus `/server`: `forwardToHelpdesk`, `trustedHeaders`);
+- `@rolandihms/helpdesk-client` (plus `/server`: `forwardToHelpdesk`, `trustedHeaders`);
 - `cf-helpdesk init` and `cf-helpdesk migrate`;
 - the generated Prisma models, verified on MySQL with Prisma 6;
 - `examples/tanstack-start` with a headless-Chrome E2E in CI.
 
-Not yet: `@cf-helpdesk/hono` (`forwardToHelpdesk` covers it in about 5 lines); npm publishing (packages are still private; `init --deps file` links a checkout).
-- **`@cf-helpdesk/client`**: a framework-agnostic typed fetch client (types from the API's zod schemas). It works in browsers, Workers and Node.
-- **`@cf-helpdesk/hono`**: `helpdeskProxy({ binding, resolvePrincipal })`. Other frameworks use the client plus a short proxy example.
+Not yet: `@rolandihms/helpdesk-hono` (`forwardToHelpdesk` covers it in about 5 lines); npm publishing (packages are still private; `init --deps file` links a checkout).
+- **`@rolandihms/helpdesk-client`**: a framework-agnostic typed fetch client (types from the API's zod schemas). It works in browsers, Workers and Node.
+- **`@rolandihms/helpdesk-hono`**: `helpdeskProxy({ binding, resolvePrincipal })`. Other frameworks use the client plus a short proxy example.
 - **`cf-helpdesk` CLI** (one bin):
   - `init` writes `helpdesk/` into the host repo: `wrangler.jsonc`, `worker.ts`, `helpdesk.config.ts`, the SQL and the Prisma file;
   - `setup` provisions resources (the existing logic) with `--table-prefix`;
@@ -89,18 +89,18 @@ Not yet: `@cf-helpdesk/hono` (`forwardToHelpdesk` covers it in about 5 lines); n
 ### H3: Realty On Record integration
 - `cf-helpdesk init` in `portal_he_ui`. Deploy into the portal-tech account with `hd_*` tables in Realty's PlanetScale, applying the SQL by deploy request.
 - `realty-api` mounts `/api/v1/helpdesk/*`: the better-auth session plus company/tenant context becomes the principal, sent through the binding.
-- Realty screens use Realty's own shadcn components with TanStack Query over `@cf-helpdesk/client`. `@cf-helpdesk/react` hooks get extracted from this work only if they prove reusable.
+- Realty screens use Realty's own shadcn components with TanStack Query over `@rolandihms/helpdesk-client`. `@rolandihms/helpdesk-react` hooks get extracted from this work only if they prove reusable.
 - Live test: real mail to the Realty support address → ticket in the right company → reply from Realty's UI arrives threaded.
 
 ### H4: standalone applet (later)
-- A **TanStack Start** app with **better-auth**, built only on `@cf-helpdesk/client`.
+- A **TanStack Start** app with **better-auth**, built only on `@rolandihms/helpdesk-client`.
 - Framework-agnostic embedding: an **iframe route** with a short-lived signed handoff token from the host. A web component is deferred until a non-React host actually needs one, because it would be a second render stack to maintain.
 
 ## Full UI first?
 No. A styled UI now tests presentation, not integration, and Realty would throw it away. The reference app in H2 gives us end-to-end coverage of the real contract. The Prisma/MySQL CI test covers what no UI can: whether the prefixed tables survive the host's tooling.
 
-## Open questions (needed by H3, not H1)
-- The Realty support address and zone. Is the zone on the portal-tech account?
-- Partition key: one per Company, or also per Tenant? Should tenants see their own tickets (requester portal)?
-- Which Realty roles map to `admin` and `agent`?
-- npm scope (`@cf-helpdesk` or `@portal-tech`?) and the repo's license.
+## Decisions for H3 (2026-10-26)
+- **Account and zone:** `realtyonrecord.com`, on the portal-tech Cloudflare account (roland@portal-tech.co). The zone has no MX records yet, so Email Routing replaces nothing. The support address is still to be chosen.
+- **Partitions:** one per Company (`company:<id>`). Realty admins are unrestricted (`partition: null`) and see everything. Tenants get no partition and no requester view for now.
+- **Roles:** only Realty's internal admins (`user.role === "admin"`) reach the help desk, as `admin`. Other users get `403` from `realty-api` before anything is forwarded.
+- **npm scope:** `@rolandihms`: packages are `@rolandihms/helpdesk-{core,db,plugins,worker,client,cli}`. The license is still open.

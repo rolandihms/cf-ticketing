@@ -1,7 +1,7 @@
 import type { HelpdeskEnv } from "./env";
-import { computeIngestKey, evaluateInbound, type Mailbox } from "@cf-helpdesk/core";
+import { computeIngestKey, evaluateInbound, type Mailbox } from "@rolandihms/helpdesk-core";
 import { EmailMessage } from "cloudflare:email";
-import { createRepo, type HelpdeskRepo } from "@cf-helpdesk/db";
+import { createRepo, type HelpdeskRepo } from "@rolandihms/helpdesk-db";
 import { newMessageId, toRawMime } from "./email/outbound";
 import { parseAndStore, r2Prefix } from "./email/parse";
 import { ackTemplate } from "./email/templates";

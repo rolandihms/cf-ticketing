@@ -5,7 +5,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
-import { compileMigrations, renderMigrationFile, renderPrismaSchema, type SqlDialect, TABLE_PREFIX_RE } from "@cf-helpdesk/db/migrations";
+import { compileMigrations, renderMigrationFile, renderPrismaSchema, type SqlDialect, TABLE_PREFIX_RE } from "@rolandihms/helpdesk-db/migrations";
 import { applyEdits, type JSONPath, modify } from "jsonc-parser";
 import { WORKER_NAME_RE } from "./answers";
 
@@ -22,7 +22,7 @@ export interface InitOptions {
   /** Folder of the host's Prisma schema (relative to cwd), "none" to skip, or undefined to detect. */
   prismaDir?: string;
   modelPrefix?: string;
-  /** How the generated package.json depends on @cf-helpdesk/*: npm versions or this checkout (file:). */
+  /** How the generated package.json depends on @rolandihms/helpdesk-*: npm versions or this checkout (file:). */
   deps: { kind: "npm"; version: string } | { kind: "file"; packagesDir: string };
   /** apps/worker/wrangler.jsonc of this repo (comments and all, like setup). */
   templatePath: string;
@@ -86,10 +86,10 @@ export async function planInit(o: InitOptions): Promise<{ files: PlannedFile[]; 
         type: "module",
         scripts: { dev: "wrangler dev", deploy: "wrangler deploy", types: "wrangler types --strict-vars false" },
         dependencies: {
-          "@cf-helpdesk/core": dep("core"),
-          "@cf-helpdesk/db": dep("db"),
-          "@cf-helpdesk/plugins": dep("plugins"),
-          "@cf-helpdesk/worker": dep("worker"),
+          "@rolandihms/helpdesk-core": dep("core"),
+          "@rolandihms/helpdesk-db": dep("db"),
+          "@rolandihms/helpdesk-plugins": dep("plugins"),
+          "@rolandihms/helpdesk-worker": dep("worker"),
         },
         devDependencies: { typescript: "^5.9.0", wrangler: "^4.151.0" },
       },
@@ -100,7 +100,7 @@ export async function planInit(o: InitOptions): Promise<{ files: PlannedFile[]; 
   files.push({
     path: at("src/index.ts"),
     kind: "user",
-    content: `import { createHelpdesk } from "@cf-helpdesk/worker";
+    content: `import { createHelpdesk } from "@rolandihms/helpdesk-worker";
 import config from "../helpdesk.config";
 
 const helpdesk = createHelpdesk(config);
@@ -117,9 +117,9 @@ export default {
     path: at("helpdesk.config.ts"),
     kind: "user",
     content: `// Help desk configuration: classification and plugins. See the cf-helpdesk docs (AI-PIPELINE.md, INTEGRATIONS.md).
-import { DEFAULT_CATEGORIES, defineHelpdesk, llmClassifier, rulesClassifier } from "@cf-helpdesk/core";
-import { webhooks } from "@cf-helpdesk/plugins";
-import { workersAI } from "@cf-helpdesk/worker";
+import { DEFAULT_CATEGORIES, defineHelpdesk, llmClassifier, rulesClassifier } from "@rolandihms/helpdesk-core";
+import { webhooks } from "@rolandihms/helpdesk-plugins";
+import { workersAI } from "@rolandihms/helpdesk-worker";
 
 export default defineHelpdesk<Env>({
   ackNewTickets: true,
@@ -135,7 +135,7 @@ export default defineHelpdesk<Env>({
   },
 
   plugins: [
-    // Tell your app what happens (signed POST; verify with verifyWebhookSignature from @cf-helpdesk/plugins).
+    // Tell your app what happens (signed POST; verify with verifyWebhookSignature from @rolandihms/helpdesk-plugins).
     // Off until WEBHOOK_URL is set; the secret: \`wrangler secret put WEBHOOK_SECRET\`.
     webhooks<Env>({
       endpoints: [
@@ -276,14 +276,14 @@ npx wrangler deploy
 
 Then route your support address to the Worker (Email Routing, or \`"addresses"\` in wrangler.jsonc) and, in
 your app's wrangler config, add \`"services": [{ "binding": "HELPDESK", "service": "${o.workerName}" }]\`.
-Forward requests with \`forwardToHelpdesk()\` from \`@cf-helpdesk/client/server\`.
+Forward requests with \`forwardToHelpdesk()\` from \`@rolandihms/helpdesk-client/server\`.
 
 ## Upgrading
 
 **The SQL creates the tables, never Prisma.** On every new database (including PlanetScale dev branches), apply the
 migrations before anything runs \`prisma db push\`: Prisma can't express the byte-exact collation the help desk relies on.
 
-Update the \`@cf-helpdesk/*\` packages, re-run \`${cli} init\` with the same options, apply any new
+Update the \`@rolandihms/helpdesk-*\` packages, re-run \`${cli} init\` with the same options, apply any new
 \`migrations/${dialect}/*.sql\` (and push the regenerated Prisma file) **before** deploying the new Worker.
 `;
 }

@@ -1,4 +1,4 @@
-// @cf-helpdesk/worker: the help desk as a library. Your Worker's entry point is three lines:
+// @rolandihms/helpdesk-worker: the help desk as a library. Your Worker's entry point is three lines:
 //
 //   const helpdesk = createHelpdesk(config);
 //   export const InboundEmailWorkflow = helpdesk.InboundEmailWorkflow;

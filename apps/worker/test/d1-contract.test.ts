@@ -1,5 +1,5 @@
 // Run the shared HelpdeskRepo contract (packages/db/test) against real D1 in workerd.
-import { compileMigrations, D1Dialect, D1Repo, withTablePrefix } from "@cf-helpdesk/db";
+import { compileMigrations, D1Dialect, D1Repo, withTablePrefix } from "@rolandihms/helpdesk-db";
 import { env } from "cloudflare:workers";
 import { Kysely } from "kysely";
 import { expect } from "vitest";

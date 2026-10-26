@@ -1,5 +1,5 @@
-import type { InboundMessageMeta, Mailbox, Ticket } from "@cf-helpdesk/core";
-import { subjectWithRef } from "@cf-helpdesk/core";
+import type { InboundMessageMeta, Mailbox, Ticket } from "@rolandihms/helpdesk-core";
+import { subjectWithRef } from "@rolandihms/helpdesk-core";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 

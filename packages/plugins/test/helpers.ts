@@ -1,4 +1,4 @@
-import type { ClassificationOutcome, HelpdeskEvent, HookContext, TicketLink } from "@cf-helpdesk/core";
+import type { ClassificationOutcome, HelpdeskEvent, HookContext, TicketLink } from "@rolandihms/helpdesk-core";
 
 export const ticket = {
   id: "01TICKET0000000000000000AA",

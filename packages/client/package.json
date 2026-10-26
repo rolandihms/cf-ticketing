@@ -1,5 +1,5 @@
 {
-  "name": "@cf-helpdesk/client",
+  "name": "@rolandihms/helpdesk-client",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -14,7 +14,7 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
-    "@cf-helpdesk/core": "*"
+    "@rolandihms/helpdesk-core": "*"
   },
   "devDependencies": {
     "typescript": "^5.9.0",

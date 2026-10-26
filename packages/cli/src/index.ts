@@ -65,7 +65,7 @@ const repoRoot = resolve(workerDir, "../..");
 async function main() {
   const command = process.argv[2];
   if (command === "migrate") {
-    const { runMigrateCli } = await import("@cf-helpdesk/db/node-migrate");
+    const { runMigrateCli } = await import("@rolandihms/helpdesk-db/node-migrate");
     process.exitCode = await runMigrateCli(process.argv.slice(3));
     return;
   }

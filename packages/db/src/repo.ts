@@ -1,4 +1,4 @@
-import { type Agent, type AgentRole, type ClassificationOutcome, formatRef, type Mailbox, type Ticket, type TicketLink, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
+import { type Agent, type AgentRole, type ClassificationOutcome, formatRef, type Mailbox, type Ticket, type TicketLink, type TicketPriority, type TicketStatus } from "@rolandihms/helpdesk-core";
 import { type Compilable, type InsertQueryBuilder, type InsertResult, Kysely, sql, type Transaction } from "kysely";
 import { monotonicFactory } from "ulidx";
 

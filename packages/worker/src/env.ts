@@ -1,4 +1,4 @@
-import type { DbEnv } from "@cf-helpdesk/db";
+import type { DbEnv } from "@rolandihms/helpdesk-db";
 
 /**
  * Bindings and vars the help desk reads. Your Worker's Env must provide these (see apps/worker/wrangler.jsonc);

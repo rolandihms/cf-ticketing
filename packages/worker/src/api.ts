@@ -1,5 +1,5 @@
-import { type Agent, type AgentRole, normalizeMessageId, sha256Hex, subjectWithRef, type Ticket, TICKET_PRIORITIES, TICKET_STATUSES, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
-import { AgentIdentityConflictError, type HelpdeskRepo, TicketConflictError, type TicketFilter, type TicketPatch, withRepo } from "@cf-helpdesk/db";
+import { type Agent, type AgentRole, normalizeMessageId, sha256Hex, subjectWithRef, type Ticket, TICKET_PRIORITIES, TICKET_STATUSES, type TicketPriority, type TicketStatus } from "@rolandihms/helpdesk-core";
+import { AgentIdentityConflictError, type HelpdeskRepo, TicketConflictError, type TicketFilter, type TicketPatch, withRepo } from "@rolandihms/helpdesk-db";
 import { type Context, Hono } from "hono";
 import { AccessUnavailableError, parseTrustedIdentity, type Principal, secretsEqual, verifyAccessJwt } from "./auth";
 import { newMessageId, type SendFormat, sendViaBinding } from "./email/outbound";

@@ -1,5 +1,5 @@
-import type { InboundMessageMeta } from "@cf-helpdesk/core";
-import { normalizeMessageId, referencedMessageIds } from "@cf-helpdesk/core";
+import type { InboundMessageMeta } from "@rolandihms/helpdesk-core";
+import { normalizeMessageId, referencedMessageIds } from "@rolandihms/helpdesk-core";
 import PostalMime, { type Address } from "postal-mime";
 
 export interface StoredRawRef {

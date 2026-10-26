@@ -1,6 +1,6 @@
 // Wire types of the agent API (docs/AGENT-API.md). Tickets, agents and mailboxes are camelCase;
 // messages, events and other rows are returned as stored (snake_case).
-import type { Agent, AgentRole, Mailbox, Ticket, TicketPriority, TicketStatus } from "@cf-helpdesk/core";
+import type { Agent, AgentRole, Mailbox, Ticket, TicketPriority, TicketStatus } from "@rolandihms/helpdesk-core";
 
 export type { Agent, AgentRole, Mailbox, Ticket, TicketPriority, TicketStatus };
 

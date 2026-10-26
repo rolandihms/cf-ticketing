@@ -1,10 +1,10 @@
-import { D1Dialect, D1Repo } from "@cf-helpdesk/db";
+import { D1Dialect, D1Repo } from "@rolandihms/helpdesk-db";
 import { introspectWorkflow } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src";
-import { _clearAccessCertCache } from "@cf-helpdesk/worker";
+import { _clearAccessCertCache } from "@rolandihms/helpdesk-worker";
 import { inboundMessage, rawEmail } from "./helpers";
 
 const repo = () => new D1Repo(env.DB, new Kysely({ dialect: new D1Dialect(env.DB) }));

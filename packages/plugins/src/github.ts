@@ -1,4 +1,4 @@
-import type { ClassificationOutcome, HelpdeskPlugin, HookContext } from "@cf-helpdesk/core";
+import type { ClassificationOutcome, HelpdeskPlugin, HookContext } from "@rolandihms/helpdesk-core";
 
 export interface GitHubIssuesOptions<Env> {
   name?: string;

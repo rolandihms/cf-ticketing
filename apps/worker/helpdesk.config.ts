@@ -1,7 +1,7 @@
 // Your help desk configuration. See docs/PLUGINS.md and docs/AI-PIPELINE.md.
-import { DEFAULT_CATEGORIES, defineHelpdesk, llmClassifier, rulesClassifier } from "@cf-helpdesk/core";
-import { githubIssues, webhooks } from "@cf-helpdesk/plugins";
-import { loggerPlugin, workersAI } from "@cf-helpdesk/worker";
+import { DEFAULT_CATEGORIES, defineHelpdesk, llmClassifier, rulesClassifier } from "@rolandihms/helpdesk-core";
+import { githubIssues, webhooks } from "@rolandihms/helpdesk-plugins";
+import { loggerPlugin, workersAI } from "@rolandihms/helpdesk-worker";
 
 export default defineHelpdesk<Env>({
   ackNewTickets: true,
@@ -32,7 +32,7 @@ export default defineHelpdesk<Env>({
     }),
 
     // Optional: notify another system (signed POST) when things happen. Off until WEBHOOK_URL is set.
-    // Event types: docs/INTEGRATIONS.md (plugin events) and AGENT_EVENTS in @cf-helpdesk/core.
+    // Event types: docs/INTEGRATIONS.md (plugin events) and AGENT_EVENTS in @rolandihms/helpdesk-core.
     webhooks<Env>({
       endpoints: [
         {

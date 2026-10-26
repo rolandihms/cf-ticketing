@@ -1,8 +1,8 @@
-import { type GuardResult, type HelpdeskEvent, normalizeMessageId } from "@cf-helpdesk/core";
+import { type GuardResult, type HelpdeskEvent, normalizeMessageId } from "@rolandihms/helpdesk-core";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import type { HelpdeskEnv } from "./env";
 import type { HelpdeskOptions } from "./options";
-import { withRepo } from "@cf-helpdesk/db";
+import { withRepo } from "@rolandihms/helpdesk-db";
 import { newMessageId, sendViaBinding, type SendFormat } from "./email/outbound";
 import { parseAndStore, type StoredRawRef } from "./email/parse";
 import { ackTemplate } from "./email/templates";

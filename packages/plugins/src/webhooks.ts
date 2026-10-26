@@ -1,4 +1,4 @@
-import type { HelpdeskEvent, HelpdeskPlugin, HookContext } from "@cf-helpdesk/core";
+import type { HelpdeskEvent, HelpdeskPlugin, HookContext } from "@rolandihms/helpdesk-core";
 import { hmacSha256Hex, safeEqual } from "./crypto";
 
 export interface WebhookEndpoint<Env> {
