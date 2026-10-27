@@ -14,7 +14,7 @@
     "@rolandihms/helpdesk-core": "*",
     "@rolandihms/helpdesk-db": "*",
     "hono": "^4.13.0",
-    "postal-mime": "^4.0.6"
+    "postal-mime": "^4.0.8"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261015.1",
