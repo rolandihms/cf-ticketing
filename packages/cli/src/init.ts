@@ -11,6 +11,12 @@ import { WORKER_NAME_RE } from "./answers";
 
 export type InitDb = "d1" | "postgres" | "mysql" | "planetscale";
 
+/**
+ * How a host runs this CLI. Always the scoped package name: the generated project doesn't install the CLI, so a
+ * bare `npx cf-helpdesk` would make npx fetch whatever package owns that unscoped name.
+ */
+export const NPX_CLI = "npx @rolandihms/helpdesk-cli";
+
 export interface InitOptions {
   /** The host project's root. */
   cwd: string;
@@ -246,7 +252,7 @@ function renderWrangler(template: string, o: InitOptions): string {
 
 function renderReadme(o: InitOptions, dialect: SqlDialect, prismaDir: string | null): string {
   const dir = o.dir;
-  const cli = o.cliCommand ?? "npx cf-helpdesk";
+  const cli = o.cliCommand ?? NPX_CLI;
   const apply =
     o.db === "d1"
       ? `npx wrangler d1 create ${o.workerName}            # put the id into wrangler.jsonc\nnpx wrangler d1 migrations apply DB --remote`

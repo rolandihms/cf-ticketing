@@ -5,17 +5,22 @@ export function rawEmail(o: {
   to: string;
   subject: string;
   body?: string;
+  contentType?: string;
   messageId?: string | null;
   headers?: Record<string, string>;
+  /** Email Routing's verdict header, topmost; null leaves it out. Default: dmarc=pass. */
+  authResults?: string | null;
 }): string {
+  const auth = o.authResults === undefined ? "mx.cloudflare.net; dkim=pass header.d=cust.example; dmarc=pass header.from=cust.example" : o.authResults;
   const lines = [
+    ...(auth === null ? [] : [`Authentication-Results: ${auth}`]),
     `From: Jane Customer <${o.from}>`,
     `To: ${o.to}`,
     `Subject: ${o.subject}`,
     `Date: Tue, 14 Oct 2026 10:00:00 +0000`,
     ...(o.messageId === null ? [] : [`Message-ID: ${o.messageId ?? `<${crypto.randomUUID()}@cust.example>`}`]),
     ...Object.entries(o.headers ?? {}).map(([k, v]) => `${k}: ${v}`),
-    `Content-Type: text/plain; charset=utf-8`,
+    `Content-Type: ${o.contentType ?? "text/plain; charset=utf-8"}`,
     ``,
     o.body ?? "My printer is on fire.",
   ];

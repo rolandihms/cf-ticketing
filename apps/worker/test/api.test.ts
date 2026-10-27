@@ -436,6 +436,42 @@ describe("host-provisioned agents across tenants", () => {
     await admin("POST", "/api/mailboxes", { address: "help@two.test", name: "Two", refPrefix: "TWO", partition: "company:2" });
     expect((await admin("POST", "/api/mailboxes", { address: "help@two.test", name: "Two", refPrefix: "TWO", partition: "company:3" })).status).toBe(409);
   });
+
+  it("only an unrestricted admin adds mailboxes, with plain addresses and header-safe names", async () => {
+    const boss = { ...kim, externalId: "boss", email: "boss@host.test", role: "admin" };
+    expect((await host("POST", "/api/mailboxes", boss, { body: { address: "claim@one.test", name: "One", refPrefix: "ONE" } })).status).toBe(403);
+
+    const bad = [
+      { address: "a@b", name: "A", refPrefix: "AB" },
+      { address: "x\r\nBcc: v@evil.test@one.test", name: "A", refPrefix: "AB" },
+      { address: "<a@one.test>", name: "A", refPrefix: "AB" },
+      { address: `${"a".repeat(250)}@one.test`, name: "A", refPrefix: "AB" },
+      { address: "a@one.test", name: "A\r\nBcc: v@evil.test", refPrefix: "AB" },
+      { address: "a@one.test", name: "A", fromName: 42, refPrefix: "AB" },
+      { address: "a@one.test", name: "A", fromName: "x".repeat(256), refPrefix: "AB" },
+      { address: "a@one.test", name: "A", refPrefix: "A-B" },
+    ];
+    for (const b of bad) expect((await admin("POST", "/api/mailboxes", b)).status, JSON.stringify(b)).toBe(400);
+
+    const ok = await admin("POST", "/api/mailboxes", { address: "Help@One.Test", name: "One", fromName: "One Support", refPrefix: "ONE" });
+    expect(ok.status).toBe(201);
+    expect(ok.json).toMatchObject({ address: "help@one.test", fromName: "One Support" });
+  });
+});
+
+describe("ticket detail", () => {
+  it("returns messages without R2 keys, the ingest key or the raw auth record, plus whether DMARC proved the sender", async () => {
+    const t = await newTicket();
+    await env.DB.prepare("UPDATE messages SET text_r2_key = 'mail/x/body.txt', raw_r2_key = 'mail/x/raw.eml', auth_json = ? WHERE ticket_id = ?")
+      .bind(JSON.stringify({ guard: [], envelopeFrom: "bounce@cust.example", dmarc: "pass", senderVerified: true }), t.id).run();
+    const [m] = (await admin("GET", `/api/tickets/${t.ref}`)).json.messages;
+    for (const k of ["text_r2_key", "html_r2_key", "raw_r2_key", "ingest_key", "auth_json"]) expect(m, k).not.toHaveProperty(k);
+    expect(JSON.stringify(m)).not.toContain("mail/x/");
+    expect(m).toMatchObject({ from_addr: CUSTOMER, direction: "inbound", sender_verified: true });
+
+    await env.DB.prepare("UPDATE messages SET auth_json = NULL WHERE ticket_id = ?").bind(t.id).run();
+    expect((await admin("GET", `/api/tickets/${t.ref}`)).json.messages[0].sender_verified).toBeNull();
+  });
 });
 
 describe("attachments", () => {

@@ -23,7 +23,7 @@ This writes:
 - `helpdesk/migrations/<dialect>/*.sql`: the prefixed schema, which you apply with your own process;
 - `<your prisma folder>/helpdesk.prisma`: generated models, so `prisma db push` keeps the tables. This is for MySQL/PlanetScale, when a single `schema.prisma` is found; otherwise pass `--prisma-dir`.
 
-Re-run `init` after upgrading. Generated files are refreshed; the files you edit are kept (`--force` overwrites them). `npx cf-helpdesk migrate --driver mysql --table-prefix hd_ [--record-only]` applies or records the SQL.
+Re-run `init` after upgrading. Generated files are refreshed; the files you edit are kept (`--force` overwrites them). `npx @rolandihms/helpdesk-cli migrate --driver mysql --table-prefix hd_ [--record-only]` applies or records the SQL.
 
 Sections 1–6 explain what `init` sets up. [examples/tanstack-start](../examples/tanstack-start) is a working host app.
 
@@ -41,6 +41,8 @@ export default { fetch: helpdesk.fetch, email: helpdesk.email };
 ```
 
 It needs the bindings listed in `HelpdeskEnv` (`packages/worker/src/env.ts`): `MAIL` (R2), `EMAIL` (Email Sending), `INBOUND_WORKFLOW`, and the database. Use `apps/worker/wrangler.jsonc` as the template.
+
+**Forged senders:** inbound mail is trusted as coming from its `From:` address only when Email Routing's `Authentication-Results` header says `dmarc=pass`. Mail without that still opens a ticket, but it gets no acknowledgement (so a forged address can't be used to make you send mail) and can't join an existing ticket by quoting its ref. The verdict is shown to agents as `sender_verified` on each message. Set `requireDmarc: false` in the config only if your mail doesn't arrive through Cloudflare Email Routing.
 
 **Same account:** service bindings and Email Routing only work within one Cloudflare account. The help desk Worker must therefore live in the same account as your app's Worker and your support domain's zone.
 
@@ -161,6 +163,7 @@ A partition is an opaque string you choose, for example `company:42`.
 
 - **Mailboxes:** `POST /api/mailboxes {…, "partition": "company:42"}` assigns one. Every ticket created through the mailbox inherits its partition.
 - **Restricted callers:** a caller with a partition sees only that partition's tickets, mailboxes and messages. Anything else answers `404`.
+- **Host-provisioned agents** are workable in a partition for 30 days after the host last sent them there (refreshed on use). Sending one with a partition withdraws the global (`partition: null`) grant.
   - It may assign only agents who are global or in the ticket's partition.
   - A restricted admin creates and manages agents only in its own partition.
 - **Unrestricted callers** (`partition: null`, or the API token) see everything. They can narrow a list with `GET /api/tickets?partition=company:42`.

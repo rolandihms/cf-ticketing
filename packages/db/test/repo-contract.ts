@@ -1,7 +1,7 @@
 // Behaviour every HelpdeskRepo implementation must satisfy. Run per dialect by *.test.ts files.
 import type { Mailbox } from "@rolandihms/helpdesk-core";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { HelpdeskRepo, NewMessage, SqlRepo } from "../src/repo";
+import { type HelpdeskRepo, type NewMessage, PARTITION_GRANT_TTL, type SqlRepo } from "../src/repo";
 
 export function inbound(ingestKey: string, overrides: Partial<NewMessage> = {}): NewMessage {
   return {
@@ -222,6 +222,26 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
       expect(await ids("company:2")).toContain(one.id);
       expect((await repo.getAgentPartitions(one.id)).sort()).toEqual(["company:1", "company:2"]);
       expect(await repo.getAgentPartitions(staff.id)).toEqual(["*"]);
+    });
+
+    it("withdraws global access when the host scopes an agent, and lets unconfirmed grants lapse", async () => {
+      const staff = await repo.upsertAgentByExternalId({ externalId: "u3", email: "staff@host.test", name: "Staff", role: "admin", partition: null });
+      const ids = async (p: string) => (await repo.listAgents({ partition: p })).map((a) => a.id);
+      expect(await ids("company:9")).toContain(staff.id);
+      // The host now sends them for one company only: "*" goes, so they're no longer in every tenant.
+      await repo.upsertAgentByExternalId({ externalId: "u3", email: "staff@host.test", name: "Staff", role: "agent", partition: "company:1" });
+      expect(await repo.getAgentPartitions(staff.id)).toEqual(["company:1"]);
+      expect(await ids("company:9")).not.toContain(staff.id);
+      expect(await ids("company:1")).toContain(staff.id);
+
+      // A grant the host hasn't confirmed within the TTL lapses…
+      const old = Date.now() - PARTITION_GRANT_TTL - 1000;
+      await (repo as unknown as SqlRepo).db.updateTable("agent_partitions").set({ created_at: old }).where("agent_id", "=", staff.id).execute();
+      expect(await repo.getAgentPartitions(staff.id)).toEqual([]);
+      expect(await ids("company:1")).not.toContain(staff.id);
+      // …and comes back (refreshed) the next time the host sends them there.
+      await repo.upsertAgentByExternalId({ externalId: "u3", email: "staff@host.test", name: "Staff", role: "agent", partition: "company:1" });
+      expect(await repo.getAgentPartitions(staff.id)).toEqual(["company:1"]);
     });
 
     it("manages agents (idempotent create by email, update, deactivate)", async () => {

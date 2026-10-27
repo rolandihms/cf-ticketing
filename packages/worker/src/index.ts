@@ -43,7 +43,7 @@ export function createHelpdesk<E extends HelpdeskEnv>(options: HelpdeskOptions<E
 
   return {
     fetch: (request: Request, env: E, ctx: ExecutionContext) => api.fetch(request, resolve(env), ctx),
-    email: (message: ForwardableEmailMessage, env: E, _ctx?: ExecutionContext) => handleEmail(message, resolve(env)),
+    email: (message: ForwardableEmailMessage, env: E, _ctx?: ExecutionContext) => handleEmail(message, resolve(env), config),
     InboundEmailWorkflow,
   };
 }

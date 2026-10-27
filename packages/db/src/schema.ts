@@ -128,6 +128,7 @@ export interface TicketLinksTable {
 export interface AgentPartitionsTable {
   agent_id: string;
   partition_key: string;
+  /** When the host last confirmed this grant (refreshed about daily); grants lapse after PARTITION_GRANT_TTL. */
   created_at: number;
 }
 

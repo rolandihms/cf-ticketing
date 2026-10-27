@@ -16,7 +16,7 @@ import {
   prefixFromAddress,
   profileFromAddress,
 } from "./answers";
-import { InitError, type InitDb, planInit, writeInit } from "./init";
+import { InitError, type InitDb, NPX_CLI, planInit, writeInit } from "./init";
 import { runSetup, SetupError } from "./setup";
 import { realWrangler } from "./wrangler";
 
@@ -251,7 +251,7 @@ async function init(argv: string[]) {
       deps: depsKind === "file" ? { kind: "file", packagesDir } : { kind: "npm", version: ownVersion },
       // The published package carries a copy of apps/worker/wrangler.jsonc (scripts/release.mjs).
       templatePath: inCheckout ? join(workerDir, "wrangler.jsonc") : join(pkgRoot, "templates/wrangler.jsonc"),
-      cliCommand: depsKind === "file" ? `npm --prefix ${repoRoot} run cli --` : "npx cf-helpdesk",
+      cliCommand: depsKind === "file" ? `npm --prefix ${repoRoot} run cli --` : NPX_CLI,
       force: f.force,
     });
     const report = await writeInit(cwd, plan.files, f.force);

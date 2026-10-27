@@ -88,6 +88,11 @@ export interface Message {
   text_preview: string | null;
   author_agent_id: string | null;
   created_at: number;
+  /**
+   * Inbound mail only: true when DMARC proved the From address. false means the sender may be forged, so
+   * check before acting on it. null for our own messages and mail stored before 0.1.1.
+   */
+  sender_verified: boolean | null;
 }
 
 export interface Attachment {

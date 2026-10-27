@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src";
 import { D1Dialect, D1Repo } from "@rolandihms/helpdesk-db";
 import { Kysely } from "kysely";
+import { htmlToText } from "../../../packages/worker/src/email/html-text";
 import { inboundMessage, rawEmail } from "./helpers";
 
 const SUPPORT = "support@acme.test";
@@ -103,6 +104,34 @@ describe("inbound email → ticket", () => {
       deliver(rawEmail({ from: "mallory@evil.example", to: SUPPORT, subject: "Re: [ACME-000001] Help" }), "mallory@evil.example"),
     );
     expect(stranger).toMatchObject({ ticketRef: "ACME-000002", created: true });
+  });
+
+  it("never trusts a subject ref, or acks, when DMARC doesn't prove the From address", async () => {
+    await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Help" })));
+    // Forged From: the victim's address with a known ref, but Email Routing says dmarc=fail (or nothing at all).
+    for (const authResults of ["mx.cloudflare.net; dmarc=fail header.from=cust.example", null]) {
+      const [forged] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Re: [ACME-000001] Help", authResults })));
+      expect(forged).toMatchObject({ created: true, threadedBy: "new", acked: false });
+    }
+    // A pass the sender wrote into the message themselves sits below Email Routing's header and is ignored.
+    const spoofed = rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Re: [ACME-000001] Help", authResults: "mx.cloudflare.net; dmarc=none", headers: { "Authentication-Results": "mx.cloudflare.net; dmarc=pass" } });
+    const [s] = await runOne(() => deliver(spoofed));
+    expect(s).toMatchObject({ created: true, acked: false });
+
+    const first = await repo().findTicketByRef("ACME-000001");
+    const msgs = await repo().db.selectFrom("messages").select(["auth_json"]).where("ticket_id", "=", first!.id).where("direction", "=", "inbound").execute();
+    expect(msgs).toHaveLength(1);
+    expect(JSON.parse(msgs[0]!.auth_json!)).toMatchObject({ dmarc: "pass", senderVerified: true });
+  });
+
+  it("gives HTML-only mail a text body, preview and classifier input", async () => {
+    const html = "<html><head><style>p{color:red}</style></head><body><p>Hi team,</p><p>The tap&nbsp;is <b>leaking</b> &amp; dripping.<br>See <a href=\"https://x.example/p\">photo</a></p><script>alert(1)</script></body></html>";
+    const [r] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Tap", body: html, contentType: "text/html; charset=utf-8" })));
+    const t = await repo().findTicketByRef(r!.ticketRef);
+    const m = await repo().db.selectFrom("messages").select(["text_preview", "text_r2_key", "html_r2_key"]).where("ticket_id", "=", t!.id).where("direction", "=", "inbound").executeTakeFirstOrThrow();
+    expect(m.text_preview).toBe("Hi team, The tap is leaking & dripping. See photo (https://x.example/p)");
+    expect(m.html_r2_key).not.toBeNull();
+    expect(await (await env.MAIL.get(m.text_r2_key!))!.text()).toBe("Hi team,\n\nThe tap is leaking & dripping.\nSee photo (https://x.example/p)");
   });
 
   it("ignores redelivery of the same message", async () => {
@@ -223,4 +252,16 @@ describe("api", () => {
     expect(body.ticket.ref).toBe("ACME-000001");
     expect(body.messages).toHaveLength(2);
   });
+});
+
+describe("htmlToText", () => {
+  it.each([
+    ["<p>a</p><p>b</p>", "a\n\nb"],
+    ["line<br/>break", "line\nbreak"],
+    ["&lt;b&gt; &#65;&#x42; &bogus; &#xD800;", "<b> AB &bogus;"],
+    ['<a href="https://a.example">https://a.example</a>', "https://a.example"],
+    ['<a href="javascript:alert(1)">x</a>', "x"],
+    ["<!-- hidden --><title>T</title>shown", "shown"],
+    ["   ", ""],
+  ])("%s", (html, text) => expect(htmlToText(html)).toBe(text));
 });

@@ -30,7 +30,7 @@ Access decides **who may reach** the Worker. The agents table decides **who may 
 
 **Permission model:**
 - Every active agent can see and work every ticket **in its partition**. Callers without a partition (the API token, global agents, a trusted principal with `partition: null`) see everything. Outside your partition, everything answers `404`. See [EMBEDDING.md](EMBEDDING.md#4-partitions-multi-tenancy).
-- `admin` additionally manages agents and mailboxes. A partition-restricted admin manages only its own partition's agents.
+- `admin` additionally manages agents and mailboxes. A partition-restricted admin manages only its own partition's agents, and can't add mailboxes (a mailbox decides which partition an address's mail lands in).
 - The help desk always keeps at least one active admin; the last one can't be demoted or deactivated.
 
 **Browser safety:**
@@ -47,9 +47,9 @@ Access decides **who may reach** the Worker. The agents table decides **who may 
 | `POST /api/agents` `{email, name, role?, partition?}` | admin | Create an agent. Idempotent by email. Restricted admins always create in their own partition. |
 | `PATCH /api/agents/:id` `{name?, role?, active?, partition?}` | admin | Update or deactivate an agent. You can't demote or deactivate yourself. Only unrestricted admins change `partition`. |
 | `GET /api/mailboxes` | any | List mailboxes (your partition's) |
-| `POST /api/mailboxes` `{address, name, refPrefix, fromName?, partition?}` | admin | Add a mailbox. Its tickets inherit `partition`. |
+| `POST /api/mailboxes` `{address, name, refPrefix, fromName?, partition?}` | unrestricted admin | Add a mailbox (a plain `local@domain.tld` address, stored lowercase). Its tickets inherit `partition`. |
 | `GET /api/tickets` | any | List tickets, newest first. Filters: `status=open,pending`, `assignee=me\|unassigned\|<agentId>`, `category=bug`, `mailbox=<id>`, `q=<text in subject or ref>`, `partition=<key>` (unrestricted callers only), `limit` (1–100), `cursor` (from `nextCursor`). `nextCursor: null` means you've reached the end; the last page can be empty. |
-| `GET /api/tickets/:ref` | any | The ticket with requester, messages, attachments, events and classifications |
+| `GET /api/tickets/:ref` | any | The ticket with requester, messages, attachments, events and classifications. Inbound messages carry `sender_verified`: `false` means DMARC didn't prove the From address, so it may be forged |
 | `PATCH /api/tickets/:ref` `{status?, priority?, assignee?}` | any | `assignee` is an agent id, `"me"`, or `null`. Each change is recorded as an event attributed to you. Updates are compare-and-set: if someone changed the same field meanwhile, you get `409`; reload and retry. |
 | `POST /api/tickets/:ref/notes` `{text}` | any | An internal note. Never emailed. |
 | `POST /api/tickets/:ref/replies` `{text, status?}` | any | **Emails the customer** (details below). |

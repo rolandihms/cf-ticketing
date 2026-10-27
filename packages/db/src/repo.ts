@@ -160,6 +160,10 @@ export interface HelpdeskRepo {
 }
 
 const now = () => Date.now();
+const DAY = 24 * 60 * 60 * 1000;
+/** How long a host-provisioned agent stays workable in a partition after the host last sent it there. */
+export const PARTITION_GRANT_TTL = 30 * DAY;
+const PARTITION_GRANT_REFRESH = DAY;
 
 function toTicket(r: TicketsTable): Ticket {
   return {
@@ -462,7 +466,7 @@ export class SqlRepo implements HelpdeskRepo {
             eb("partition_key", "is", null),
             eb.or([
               eb("external_id", "is", null),
-              eb("id", "in", eb.selectFrom("agent_partitions").select("agent_id").where("partition_key", "in", [p, "*"])),
+              eb("id", "in", eb.selectFrom("agent_partitions").select("agent_id").where("partition_key", "in", [p, "*"]).where("created_at", ">=", now() - PARTITION_GRANT_TTL)),
             ]),
           ]),
         ]),
@@ -472,7 +476,9 @@ export class SqlRepo implements HelpdeskRepo {
   }
 
   async getAgentPartitions(agentId: string) {
-    return (await this.db.selectFrom("agent_partitions").select("partition_key").where("agent_id", "=", agentId).execute()).map((r) => r.partition_key);
+    const rows = await this.db.selectFrom("agent_partitions").select("partition_key")
+      .where("agent_id", "=", agentId).where("created_at", ">=", now() - PARTITION_GRANT_TTL).execute();
+    return rows.map((r) => r.partition_key);
   }
 
   async getAgent(id: string) {
@@ -542,11 +548,29 @@ export class SqlRepo implements HelpdeskRepo {
       await this.db.updateTable("agents").set({ email, name: input.name, role: input.role, active: 1 }).where("id", "=", row.id).execute();
       row = (await byExternal())!;
     }
-    await this.insertIgnore(
-      this.db.insertInto("agent_partitions").values({ agent_id: row.id, partition_key: input.partition ?? "*", created_at: now() }),
-      ["agent_id", "partition_key"],
-    ).execute();
+    await this.syncAgentPartition(row.id, input.partition);
     return toAgent(row);
+  }
+
+  /**
+   * Record that the host sent this agent for `partition` (null = every partition, stored as "*"). A grant lapses
+   * PARTITION_GRANT_TTL after the host last confirmed it, and a partitioned request withdraws "*", so an agent the
+   * host stops sending somewhere stops being assignable and listed there. Writes only when something changes
+   * (or about once a day per grant), not on every request.
+   */
+  private async syncAgentPartition(agentId: string, partition: string | null) {
+    const key = partition ?? "*";
+    const t = now();
+    const rows = await this.db.selectFrom("agent_partitions").select(["partition_key", "created_at"]).where("agent_id", "=", agentId).execute();
+    const mine = rows.find((r) => r.partition_key === key);
+    if (!mine) {
+      await this.insertIgnore(this.db.insertInto("agent_partitions").values({ agent_id: agentId, partition_key: key, created_at: t }), ["agent_id", "partition_key"]).execute();
+    } else if (Number(mine.created_at) < t - PARTITION_GRANT_REFRESH) {
+      await this.db.updateTable("agent_partitions").set({ created_at: t }).where("agent_id", "=", agentId).where("partition_key", "=", key).execute();
+    }
+    if (partition !== null && rows.some((r) => r.partition_key === "*")) {
+      await this.db.deleteFrom("agent_partitions").where("agent_id", "=", agentId).where("partition_key", "=", "*").execute();
+    }
   }
 
   async updateTicket(ticket: Ticket, patch: TicketPatch, actor: string): Promise<Ticket> {

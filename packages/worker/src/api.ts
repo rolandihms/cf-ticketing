@@ -1,5 +1,5 @@
 import { type Agent, type AgentRole, normalizeMessageId, sha256Hex, subjectWithRef, type Ticket, TICKET_PRIORITIES, TICKET_STATUSES, type TicketPriority, type TicketStatus } from "@rolandihms/helpdesk-core";
-import { AgentIdentityConflictError, type HelpdeskRepo, TicketConflictError, type TicketFilter, type TicketPatch, withRepo } from "@rolandihms/helpdesk-db";
+import { AgentIdentityConflictError, type HelpdeskRepo, type MessagesTable, TicketConflictError, type TicketFilter, type TicketPatch, withRepo } from "@rolandihms/helpdesk-db";
 import { type Context, Hono } from "hono";
 import { AccessUnavailableError, parseTrustedIdentity, type Principal, secretsEqual, verifyAccessJwt } from "./auth";
 import { newMessageId, type SendFormat, sendViaBinding } from "./email/outbound";
@@ -60,6 +60,38 @@ const str = (v: unknown, field: string, max: number): string => {
   if (v.length > max) throw new HttpError(400, `${field} is too long (max ${max})`);
   return v;
 };
+
+/** Mailbox addresses go into From/To headers of every ack and reply: keep them to plain, header-safe addresses. */
+const MAILBOX_ADDRESS_RE = /^[a-z0-9._%+-]{1,64}@([a-z0-9-]{1,63}\.)+[a-z]{2,63}$/;
+
+/** Text that ends up in a mail header (display names): required, ≤255 characters, no control characters. */
+const headerText = (v: unknown, field: string): string => {
+  const t = str(v, field, 255);
+  if (/[\x00-\x1f\x7f]/.test(t)) throw new HttpError(400, `${field} must not contain control characters`);
+  return t;
+};
+
+/**
+ * A message as the API returns it. An allowlist: R2 keys, the ingest key and the raw auth record stay internal.
+ * sender_verified: for inbound mail, whether DMARC proved the From address (null for our own messages and old rows).
+ */
+function publicMessage(m: MessagesTable) {
+  let senderVerified: boolean | null = null;
+  if (m.direction === "inbound" && m.auth_json) {
+    try {
+      const v = (JSON.parse(m.auth_json) as { senderVerified?: unknown }).senderVerified;
+      if (typeof v === "boolean") senderVerified = v;
+    } catch {
+      // Unparseable: leave it unknown.
+    }
+  }
+  return {
+    id: m.id, ticket_id: m.ticket_id, mailbox_id: m.mailbox_id, direction: m.direction, kind: m.kind,
+    message_id_hdr: m.message_id_hdr, provider_msg_id: m.provider_msg_id, in_reply_to: m.in_reply_to,
+    from_addr: m.from_addr, to_json: m.to_json, cc_json: m.cc_json, subject: m.subject, text_preview: m.text_preview,
+    author_agent_id: m.author_agent_id, created_at: m.created_at, sender_verified: senderVerified,
+  };
+}
 
 /** A partition from a request body: undefined (not given), null, or a short opaque string. */
 function partitionField(v: unknown): string | null | undefined {
@@ -253,15 +285,19 @@ export function createApi(config: HelpdeskOptions) {
   api.post("/api/mailboxes", async (c) => {
     requireAdmin(c);
     const p = principal(c);
-    const b = await body<{ address: string; name: string; refPrefix: string; fromName?: string; partition: string | null }>(c);
-    if (!b.address?.includes("@") || !/^[A-Z0-9]{2,10}$/i.test(b.refPrefix ?? "")) {
-      throw new HttpError(400, "address and refPrefix (2-10 alphanumerics) required");
-    }
-    const partition = p.partition ?? partitionField(b.partition) ?? null;
+    // A mailbox decides which tenant an address's mail lands in, so only an unrestricted admin (the operator) adds one.
+    if (p.partition !== null) throw new HttpError(403, "only an unrestricted admin can add mailboxes");
+    const b = await body<{ address: string; name: string; refPrefix: string; fromName?: string | null; partition: string | null }>(c);
+    const address = str(b.address, "address", 254).trim().toLowerCase();
+    if (!MAILBOX_ADDRESS_RE.test(address)) throw new HttpError(400, "address must be a plain email address (local@domain.tld)");
+    if (!/^[A-Z0-9]{2,10}$/i.test(b.refPrefix ?? "")) throw new HttpError(400, "refPrefix must be 2-10 alphanumerics");
+    const name = headerText(b.name, "name");
+    const fromName = b.fromName === undefined || b.fromName === null ? null : headerText(b.fromName, "fromName");
+    const partition = partitionField(b.partition) ?? null;
     const mailbox = await withRepo(c.env, async (r) => {
-      const existing = await r.getMailboxByAddress(b.address!);
-      if (existing && (!visible(p, existing.partition) || existing.partition !== partition)) throw new HttpError(409, "address is already in use");
-      return r.createMailbox({ address: b.address!, name: str(b.name, "name", 255), refPrefix: b.refPrefix!, fromName: b.fromName ?? null, partition });
+      const existing = await r.getMailboxByAddress(address);
+      if (existing && existing.partition !== partition) throw new HttpError(409, "address is already in use");
+      return r.createMailbox({ address, name, refPrefix: b.refPrefix!, fromName, partition });
     });
     return c.json(mailbox, 201);
   });
@@ -299,7 +335,7 @@ export function createApi(config: HelpdeskOptions) {
     if (!detail || !visible(principal(c), detail.ticket.partition)) return c.json({ error: "ticket not found" }, 404);
     // R2 keys are internal; bodies and files are served by the endpoints below.
     const attachments = detail.attachments.map(({ r2_key: _key, ...a }) => a);
-    return c.json({ ...detail, attachments });
+    return c.json({ ...detail, messages: detail.messages.map(publicMessage), attachments });
   });
 
   api.patch("/api/tickets/:ref", async (c) => {

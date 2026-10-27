@@ -1,6 +1,7 @@
 import type { InboundMessageMeta } from "@rolandihms/helpdesk-core";
 import { normalizeMessageId, referencedMessageIds } from "@rolandihms/helpdesk-core";
 import PostalMime, { type Address } from "postal-mime";
+import { htmlToText } from "./html-text";
 
 export interface StoredRawRef {
   ingestKey: string;
@@ -26,7 +27,8 @@ export async function parseAndStore(bucket: R2Bucket, ref: StoredRawRef): Promis
   const prefix = r2Prefix(ref.mailboxId, ref.ingestKey);
 
   const fromAddr = email.from && !email.from.group ? email.from : null;
-  const text = email.text ?? "";
+  // HTML-only mail (postal-mime doesn't derive text): fall back to a plain-text rendering of the HTML.
+  const text = email.text?.trim() ? email.text : email.html ? htmlToText(email.html) : "";
   const textKey = text ? `${prefix}/body.txt` : null;
   const htmlKey = email.html ? `${prefix}/body.html` : null;
   if (textKey) await bucket.put(textKey, text, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });

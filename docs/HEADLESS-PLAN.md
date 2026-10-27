@@ -93,7 +93,15 @@ Done locally (portal_he_ui branch `feat/helpdesk`, not pushed):
 - `realty-api` mounts `/api/v1/helpdesk/*` behind `requireAdminMiddleware` and forwards to the `HELPDESK` binding as an unrestricted admin;
 - `@rolandihms/helpdesk-client` has no dependencies, so bun installs it from a `file:` path.
 
-Blocked on approval: npm publish, because portal_he_ui can't push `file:` paths into a checkout that isn't there. Also the R2 bucket, the PlanetScale deploy request, the secrets, the deploys, and Email Routing for support@realtyonrecord.com.
+Published: 0.1.0 on 2026-10-27. A security review of the published code found no high or critical issues; 0.1.1 fixes what it did find:
+- the generated README ran `npx cf-helpdesk`, a name npx would fetch from the registry;
+- inbound mail now needs `dmarc=pass` from Email Routing before it gets an ack or can join a ticket by its ref (`requireDmarc`), and agents see `sender_verified`;
+- mailbox addresses and names are validated, and only unrestricted admins add mailboxes;
+- ticket detail no longer returns R2 keys or the raw auth record;
+- host-provisioned agents' partition grants lapse after 30 days unconfirmed, and a partitioned request withdraws global access;
+- HTML-only mail gets a text body.
+
+Blocked on approval: the R2 bucket, the PlanetScale deploy request, the secrets, the deploys, and Email Routing for support@realtyonrecord.com.
 
 The plan:
 - `cf-helpdesk init` in `portal_he_ui`. Deploy into the portal-tech account with `hd_*` tables in Realty's PlanetScale, applying the SQL by deploy request.
@@ -112,4 +120,4 @@ No. A styled UI now tests presentation, not integration, and Realty would throw 
 - **Account and zone:** `realtyonrecord.com`, on the portal-tech Cloudflare account (roland@portal-tech.co). The zone has no MX records yet, so Email Routing replaces nothing. The support address is still to be chosen.
 - **Partitions:** one per Company (`company:<id>`). Realty admins are unrestricted (`partition: null`) and see everything. Tenants get no partition and no requester view for now.
 - **Roles:** only Realty's internal admins (`user.role === "admin"`) reach the help desk, as `admin`. Other users get `403` from `realty-api` before anything is forwarded.
-- **npm scope:** `@rolandihms`: packages are `@rolandihms/helpdesk-{core,db,plugins,worker,client,cli}`. The license is still open.
+- **npm scope:** `@rolandihms`: packages are `@rolandihms/helpdesk-{core,db,plugins,worker,client,cli}`, MIT licensed.
