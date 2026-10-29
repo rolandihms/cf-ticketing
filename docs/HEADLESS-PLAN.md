@@ -101,7 +101,7 @@ Published: 0.1.0 on 2026-10-27. A security review of the published code found no
 - host-provisioned agents' partition grants lapse after 30 days unconfirmed, and a partitioned request withdraws global access;
 - HTML-only mail gets a text body.
 
-Blocked on approval: the R2 bucket, the hand-run SQL on PlanetScale (`server/prisma/manual_2026_10_29_helpdesk_tables.sql` in portal_he_ui), the secrets, the deploys, and Email Routing for help@realtyonrecord.com.
+Blocked on approval: the R2 bucket, the hand-run SQL on PlanetScale (`server/prisma/manual_2026_10_29_helpdesk_tables.sql` in portal_he_ui), the secrets, the deploys, and the Email Routing rule for support@realtyonrecord.com (routing is on for the zone since 2026-10-29; help-dev@ goes to realty-helpdesk-dev).
 
 The plan:
 - `cf-helpdesk init` in `portal_he_ui`. Deploy into the portal-tech account with `hd_*` tables in Realty's PlanetScale, applying the SQL by deploy request.
