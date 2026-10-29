@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["./worker-configuration.d.ts"]
+  },
+  "include": ["src/*.ts", "test", "helpdesk.config.ts", "vitest.config.ts", "worker-configuration.d.ts"]
+}

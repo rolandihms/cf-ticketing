@@ -1,0 +1,48 @@
+// Standalone help desk: the agent API and the UI in one Worker, on one origin.
+// Local dev (`npm run dev`) works as-is. To deploy, copy this file to wrangler.<profile>.jsonc
+// (gitignored), fill in account_id, the D1 id and your addresses, and see README.md.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "helpdesk-desk",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // The UI (built by Vite) is served as static assets. Only the API reaches the Worker; every other
+  // path falls back to index.html so the client-side router can take it.
+  "assets": {
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/health"]
+  },
+
+  "define": { "__HELPDESK_DB_DRIVER__": "\"d1\"" },
+
+  "send_email": [{ "name": "EMAIL" }],
+  "ai": { "binding": "AI" },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "helpdesk-desk",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "../../packages/db/migrations/sqlite"
+    }
+  ],
+  "r2_buckets": [{ "binding": "MAIL", "bucket_name": "helpdesk-desk-mail" }],
+  "workflows": [{ "binding": "INBOUND_WORKFLOW", "name": "helpdesk-desk-inbound", "class_name": "InboundEmailWorkflow" }],
+
+  "vars": {
+    "DB_DRIVER": "d1",
+    "ACK_MODE": "send",
+    "EMAIL_SEND_FORMAT": "raw",
+    "AUTO_CREATE_MAILBOXES": "false",
+    "DEFAULT_REF_PREFIX": "SUP",
+    "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "AI_GATEWAY_ID": "",
+    // Cloudflare Access in front of the whole hostname signs agents in (README.md). Both are required in production.
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": ""
+  }
+  // Local only, in .dev.vars: DEV_AGENT_EMAIL, TRUSTED_PRINCIPAL=on, HELPDESK_SERVICE_KEY (see .dev.vars.example).
+}
