@@ -57,4 +57,18 @@ Use `dmarc=fail` to see how a forged sender looks. Workers AI is off locally, so
    ```
 7. Receive mail: add `"addresses": ["support@help.example.com"]` to the profile, so `wrangler deploy` creates the Email Routing rules, and add that address as a mailbox in **Settings**. If the domain's mail is hosted elsewhere (Google Workspace, Microsoft 365), use a subdomain such as `help.example.com` and enable Email Routing for that subdomain only. That adds MX records to the subdomain and leaves the apex's MX alone.
 
+   When Email Routing has never been set up for the apex, the dashboard won't offer subdomains, and `wrangler email routing enable` only takes a whole zone. Enable the subdomain through the API instead, then add the rule with wrangler (no `addresses` in the profile):
+
+   ```bash
+   # Records it will add (all on the subdomain):
+   curl -H "Authorization: Bearer $TOKEN" "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/email/routing/dns?subdomain=help.example.com"
+   curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/email/routing/dns" -d '{"name":"help.example.com"}'
+   npx wrangler email routing rules create example.com --match-type literal --match-field to \
+     --match-value support@help.example.com --action-type worker --action-value <worker-name>
+   npx wrangler email sending enable help.example.com   # replies and acknowledgements
+   ```
+
+   Afterwards the dashboard shows the apex's Email Routing as "misconfigured", because its MX still points at your mail host. That is expected: never accept its offer to add or fix the apex records.
+
 Acknowledgements and replies use Email Sending, which needs Workers Paid. Set `ACK_MODE` to `"reply"` on the Free plan, or to `"off"`.
