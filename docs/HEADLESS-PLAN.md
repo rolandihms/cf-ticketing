@@ -121,3 +121,12 @@ No. A styled UI now tests presentation, not integration, and Realty would throw 
 - **Partitions:** one per Company (`company:<id>`). Realty admins are unrestricted (`partition: null`) and see everything. Tenants get no partition and no requester view for now.
 - **Roles:** only Realty's internal admins (`user.role === "admin"`) reach the help desk, as `admin`. Other users get `403` from `realty-api` before anything is forwarded.
 - **npm scope:** `@rolandihms`: packages are `@rolandihms/helpdesk-{core,db,plugins,worker,client,cli}`, MIT licensed.
+
+## Decisions and rollout order (2026-10-29)
+After a review of how to test both deployments:
+- **Realty's database:** staging and production share the one main PlanetScale database, so one `realty-helpdesk` Worker serves both. Development uses a MySQL 8 server on a VPS.
+- **Realty's schema process:** direct SQL migrations, run by hand. No deploy requests, `prisma db push` or Prisma migrations. So the `hd_*` SQL is applied by hand, then recorded with `cf-helpdesk migrate --record-only`. The Prisma file only gives typed reads.
+- **Realty's account** is on Workers Paid, so Email Sending acks work.
+- **ihms.co** gets its own standalone desk at `support.ihms.co`, on the rolandihms Cloudflare account: one Worker serving the API and a static UI (same origin, as the CSRF check requires), D1, Cloudflare Access with Google login for its two agents, no GitHub plugin. Its MX is Google Workspace, so mail arrives on a subdomain (`support@help.ihms.co`).
+- **Order:** (0) redeploy the ihms.dev test Worker with 0.1.1 and verify the DMARC verdicts with real mail; (1) ihms.co; (2) Realty.
+- **Deferred:** whether senders whose domain has no DMARC record (`dmarc=none`) still get an ack.
