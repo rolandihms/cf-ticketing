@@ -1,0 +1,7 @@
+# Copy to .dev.vars. Local development only: there is no Cloudflare Access in front of `vite dev`,
+# so the Worker signs every localhost request in as this admin. Never set these in production.
+DEV_AGENT_EMAIL=you@example.com
+TRUSTED_PRINCIPAL=on
+HELPDESK_SERVICE_KEY=dev-service-key
+# For curl and scripts: Authorization: Bearer dev-token
+API_TOKEN=dev-token

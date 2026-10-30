@@ -169,18 +169,20 @@ export const isAccepted = (a: ClassificationAttempt, snap: ClassificationSnapsho
 
 /**
  * Pick the outcome from the attempts so far: the first accepted result, else fall back.
- * Lower-confidence results still contribute a summary/priority if the accepted one lacks them.
+ * Lower-confidence results still contribute a summary/priority if the accepted one lacks them (or none is
+ * accepted), so a rules hint like "no power" can raise the priority while the LLM picks the category.
  */
 export function decide(attempts: ClassificationAttempt[], snap: ClassificationSnapshot): ClassificationOutcome {
   const accepted = attempts.find((a) => isAccepted(a, snap));
   const best = accepted?.result;
   const summary = best?.summary ?? attempts.find((a) => a.result?.summary)?.result?.summary;
+  const priority = best?.priority ?? attempts.find((a) => a.result?.priority)?.result?.priority;
   if (best) {
     return {
       category: best.category,
       confidence: best.confidence,
       codeRelated: best.codeRelated,
-      ...(best.priority ? { priority: best.priority } : {}),
+      ...(priority ? { priority } : {}),
       ...(summary ? { summary } : {}),
       ...(best.tags ? { tags: best.tags } : {}),
       ...(best.details ? { details: best.details } : {}),
@@ -192,6 +194,7 @@ export function decide(attempts: ClassificationAttempt[], snap: ClassificationSn
     category: snap.fallback,
     confidence: 0,
     codeRelated: false,
+    ...(priority ? { priority } : {}),
     ...(summary ? { summary } : {}),
     acceptedBy: null,
     attempts,

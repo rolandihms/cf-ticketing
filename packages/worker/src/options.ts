@@ -1,4 +1,4 @@
-import type { HelpdeskConfig } from "@cf-helpdesk/core";
+import type { HelpdeskConfig } from "@rolandihms/helpdesk-core";
 import type { HelpdeskEnv } from "./env";
 
 /** Everything `createHelpdesk()` accepts: the help desk config (plugins, classification…) plus deployment options. */

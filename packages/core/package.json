@@ -1,6 +1,6 @@
 {
-  "name": "@cf-helpdesk/core",
-  "version": "0.0.0",
+  "name": "@rolandihms/helpdesk-core",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "MIT",

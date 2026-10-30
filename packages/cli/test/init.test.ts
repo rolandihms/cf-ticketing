@@ -31,6 +31,13 @@ async function withPrisma(...dirs: string[]) {
 }
 
 describe("cf-helpdesk init", () => {
+  it("tells hosts to run the CLI by its scoped package name, never a bare bin name npx would resolve from the registry", async () => {
+    await writeInit(cwd, (await planInit(opts({ db: "postgres" }))).files);
+    const readme = await read("helpdesk/README.md");
+    expect(readme).toContain("npx @rolandihms/helpdesk-cli migrate --driver postgres");
+    expect(readme).not.toMatch(/npx cf-helpdesk/);
+  });
+
   it("writes the Worker package, prefixed SQL and Prisma models into a PlanetScale project", async () => {
     await withPrisma("server/prisma");
     const plan = await planInit(opts());
@@ -49,7 +56,7 @@ describe("cf-helpdesk init", () => {
     expect(cfg.d1_databases).toBeUndefined();
     expect(cfg.hyperdrive).toBeUndefined();
     expect(await read("helpdesk/src/index.ts")).toContain("createHelpdesk(config)");
-    expect(JSON.parse(await read("helpdesk/package.json")).dependencies["@cf-helpdesk/worker"]).toBe("^0.1.0");
+    expect(JSON.parse(await read("helpdesk/package.json")).dependencies["@rolandihms/helpdesk-worker"]).toBe("^0.1.0");
     expect(await read("helpdesk/migrations/mysql/0001_init.sql")).toContain("create table `hd_tickets`");
     expect(await read("server/prisma/helpdesk.prisma")).toContain('@@map("hd_tickets")');
     expect(plan.notes.join("\n")).toMatch(/whole folder/);
@@ -85,7 +92,7 @@ describe("cf-helpdesk init", () => {
   it("links this checkout with file: dependencies relative to the Worker folder", async () => {
     const plan = await planInit(opts({ deps: { kind: "file", packagesDir: join(cwd, "vendor/cf-ticketing/packages") }, prismaDir: "none" }));
     const pkg = JSON.parse(plan.files.find((f) => f.path === "helpdesk/package.json")!.content);
-    expect(pkg.dependencies["@cf-helpdesk/worker"]).toBe("file:../vendor/cf-ticketing/packages/worker");
+    expect(pkg.dependencies["@rolandihms/helpdesk-worker"]).toBe("file:../vendor/cf-ticketing/packages/worker");
   });
 
   it("finds a single Prisma schema folder and refuses to guess between several", async () => {

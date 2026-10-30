@@ -1,4 +1,4 @@
-import type { DbEnv } from "@cf-helpdesk/db";
+import type { DbEnv } from "@rolandihms/helpdesk-db";
 
 /**
  * Bindings and vars the help desk reads. Your Worker's Env must provide these (see apps/worker/wrangler.jsonc);
@@ -22,6 +22,9 @@ export interface HelpdeskEnv extends DbEnv {
   DEFAULT_REF_PREFIX?: string;
   AI_MODEL?: string;
   AI_GATEWAY_ID?: string;
+
+  /** Link to a ticket in your agent UI, for new-ticket notifications; "{ref}" becomes the ticket ref. */
+  TICKET_URL?: string;
 
   /** Table name prefix, e.g. "hd_" (see docs/EMBEDDING.md). `createHelpdesk({ tablePrefix })` overrides it. */
   TABLE_PREFIX?: string;

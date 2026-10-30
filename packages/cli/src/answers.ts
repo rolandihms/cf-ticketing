@@ -1,4 +1,4 @@
-import { TABLE_PREFIX_RE } from "@cf-helpdesk/db/migrations";
+import { TABLE_PREFIX_RE } from "@rolandihms/helpdesk-db/migrations";
 
 export type DbDriver = "d1" | "postgres" | "mysql" | "planetscale";
 export type AckMode = "send" | "reply" | "off";

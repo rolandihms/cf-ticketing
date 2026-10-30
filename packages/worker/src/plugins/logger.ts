@@ -1,5 +1,5 @@
 import type { HelpdeskEnv } from "../env";
-import type { HelpdeskPlugin } from "@cf-helpdesk/core";
+import type { HelpdeskPlugin } from "@rolandihms/helpdesk-core";
 
 /** Example plugin: logs ticket activity. Copy it as a starting point for your own. */
 export const loggerPlugin: HelpdeskPlugin<HelpdeskEnv> = {

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Answers, domainOf, resourceNames, validateAnswers } from "./answers";
-import { compileMigrations, renderMigrationFile } from "@cf-helpdesk/db/migrations";
+import { compileMigrations, renderMigrationFile } from "@rolandihms/helpdesk-db/migrations";
 import { prefixedMigrationsDir, readConfig, renderConfig, type Resources } from "./config";
 import { checkMx } from "./dns";
 import { errorText, failed, type Wrangler } from "./wrangler";

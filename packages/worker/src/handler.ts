@@ -1,11 +1,12 @@
 import type { HelpdeskEnv } from "./env";
-import { computeIngestKey, evaluateInbound, type Mailbox } from "@cf-helpdesk/core";
+import { computeIngestKey, evaluateInbound, firstHeader, type Mailbox } from "@rolandihms/helpdesk-core";
 import { EmailMessage } from "cloudflare:email";
-import { createRepo, type HelpdeskRepo } from "@cf-helpdesk/db";
+import { createRepo, type HelpdeskRepo } from "@rolandihms/helpdesk-db";
 import { newMessageId, toRawMime } from "./email/outbound";
 import { parseAndStore, r2Prefix } from "./email/parse";
 import { ackTemplate } from "./email/templates";
 import { ingestInbound } from "./ingest";
+import type { HelpdeskOptions } from "./options";
 import type { InboundParams } from "./workflow";
 
 const MAX_RAW_BYTES = 25 * 1024 * 1024;
@@ -29,16 +30,16 @@ async function resolveMailbox(repo: HelpdeskRepo, env: HelpdeskEnv, address: str
  * Everything is awaited (never waitUntil): if this throws, the sending MTA should retry later,
  * and every step downstream is idempotent so redelivery is safe.
  */
-export async function handleEmail(message: ForwardableEmailMessage, env: HelpdeskEnv): Promise<void> {
+export async function handleEmail(message: ForwardableEmailMessage, env: HelpdeskEnv, config: Pick<HelpdeskOptions, "requireDmarc" | "trustedAuthServIds"> = {}): Promise<void> {
   const repo = await createRepo(env);
   try {
-    await handle(message, env, repo);
+    await handle(message, env, repo, config);
   } finally {
     await repo.close();
   }
 }
 
-async function handle(message: ForwardableEmailMessage, env: HelpdeskEnv, repo: HelpdeskRepo): Promise<void> {
+async function handle(message: ForwardableEmailMessage, env: HelpdeskEnv, repo: HelpdeskRepo, config: Pick<HelpdeskOptions, "requireDmarc" | "trustedAuthServIds">): Promise<void> {
   const to = message.to.toLowerCase();
 
   const mailbox = await resolveMailbox(repo, env, to);
@@ -51,17 +52,21 @@ async function handle(message: ForwardableEmailMessage, env: HelpdeskEnv, repo: 
     return;
   }
 
+  const raw = new Uint8Array(await new Response(message.raw).arrayBuffer());
   const guard = evaluateInbound({
     envelopeFrom: message.from,
     headers: message.headers,
     ownAddresses: await repo.listMailboxAddresses(),
+    // From the raw message, not message.headers: get() joins every copy, and only the topmost is our MTA's.
+    authenticationResults: firstHeader(raw, "authentication-results"),
+    trustedAuthServIds: config.trustedAuthServIds,
+    requireDmarc: config.requireDmarc,
   });
   if (!guard.accept) {
     console.log(JSON.stringify({ msg: "inbound dropped", from: message.from, to, reasons: guard.reasons }));
     return;
   }
 
-  const raw = new Uint8Array(await new Response(message.raw).arrayBuffer());
   const ingestKey = await computeIngestKey({
     mailbox: to,
     messageId: message.headers.get("message-id"),

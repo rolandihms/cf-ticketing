@@ -1,4 +1,4 @@
-import { type Agent, type AgentRole, type ClassificationOutcome, formatRef, type Mailbox, type Ticket, type TicketLink, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
+import { type Agent, type AgentRole, type ClassificationOutcome, formatRef, type Mailbox, type Ticket, type TicketLink, type TicketPriority, type TicketStatus } from "@rolandihms/helpdesk-core";
 import { type Compilable, type InsertQueryBuilder, type InsertResult, Kysely, sql, type Transaction } from "kysely";
 import { monotonicFactory } from "ulidx";
 
@@ -8,7 +8,9 @@ import { toD1Statement } from "./d1-dialect";
 import type { AgentsTable, AttachmentsTable, Database, MailboxesTable, MessagesTable, TicketClassificationsTable, TicketEventsTable, TicketsTable } from "./schema";
 import type { SqlDialect } from "./types";
 
-export type NewMessage = Omit<MessagesTable, "id" | "ticket_id" | "mailbox_id" | "created_at">;
+export type NewMessage = Omit<MessagesTable, "id" | "ticket_id" | "mailbox_id" | "created_at" | "author_contact_id"> & {
+  author_contact_id?: string | null;
+};
 
 export interface NewAttachment {
   r2Key: string;
@@ -21,6 +23,8 @@ export interface Contact {
   id: string;
   email: string;
   name: string | null;
+  /** The host app's user id, for contacts that are requesters there. */
+  externalId: string | null;
 }
 
 export interface TicketDetail {
@@ -39,6 +43,9 @@ export class TicketConflictError extends Error {}
 /** A trusted identity's email already belongs to an agent with a different external id. */
 export class AgentIdentityConflictError extends Error {}
 
+/** A requester's email already belongs to a contact with a different external id. */
+export class ContactIdentityConflictError extends Error {}
+
 export interface TicketFilter {
   /** One or more statuses. */
   statuses?: string[];
@@ -53,6 +60,11 @@ export interface TicketFilter {
   cursor?: string;
   /** Only tickets in this partition. Omit for every partition. */
   partition?: string;
+  /**
+   * Requester visibility: tickets this contact raised, or (with a partition) any ticket in that partition,
+   * and in both cases only tickets whose requester was verified.
+   */
+  requester?: { contactId: string; partition: string | null };
   /** @deprecated use statuses */
   status?: string;
 }
@@ -62,6 +74,33 @@ export interface TicketPatch {
   priority?: TicketPriority;
   /** Agent id, or null to unassign. */
   assigneeId?: string | null;
+  /** Replaces the whole map. */
+  metadata?: Record<string, string>;
+  partition?: string | null;
+}
+
+export interface NewTicketInput {
+  mailbox: Mailbox;
+  requesterId: string;
+  subject: string;
+  sourceIngestKey: string | null;
+  message: NewMessage;
+  attachments: NewAttachment[];
+  /** Default "email". */
+  source?: string;
+  /** Default: the mailbox's partition. */
+  partition?: string | null;
+  metadata?: Record<string, string>;
+  /** Whether the requester is proven (see TicketsTable.requester_verified). */
+  requesterVerified?: boolean;
+  /** Recorded on the ticket.created event. Default "system:email". */
+  actor?: string;
+}
+
+export interface MailboxPatch {
+  name?: string;
+  fromName?: string | null;
+  notifyNewTicket?: string[];
 }
 
 export interface SaveClassificationInput {
@@ -76,23 +115,29 @@ export interface HelpdeskRepo {
   readonly dialect: SqlDialect;
   getMailboxByAddress(address: string): Promise<Mailbox | null>;
   createMailbox(input: { address: string; name: string; refPrefix: string; fromName?: string | null; partition?: string | null }): Promise<Mailbox>;
+  getMailbox(id: string): Promise<Mailbox | null>;
+  /** Change a mailbox's names or settings; the address, prefix and partition are fixed. Null if not found. */
+  updateMailbox(id: string, patch: MailboxPatch): Promise<Mailbox | null>;
   listMailboxAddresses(): Promise<string[]>;
   upsertContact(email: string, name: string | null): Promise<Contact>;
+  /**
+   * The contact for a host user: by external id, else the email's contact (linked to it), else a new one.
+   * A changed email moves with the contact; a contact that only had the new email is merged into it.
+   * Throws ContactIdentityConflictError if the email belongs to another external id.
+   */
+  upsertContactByExternalId(input: { externalId: string; email: string; name: string }): Promise<Contact>;
   getContact(id: string): Promise<Contact | null>;
+  /** Display names (name, else the email's local part) by contact id. */
+  getContactNames(ids: string[]): Promise<Map<string, string>>;
   /** Already-ingested inbound message; `createdTicket` is true if that message opened the ticket. */
   findInboundByIngestKey(key: string): Promise<{ messageId: string; ticketId: string; createdTicket: boolean } | null>;
   findTicketByMessageIds(mailboxId: string, messageIds: string[]): Promise<Ticket | null>;
   findTicketByRef(ref: string): Promise<Ticket | null>;
   getTicket(id: string): Promise<Ticket | null>;
   getTicketDetail(ref: string): Promise<TicketDetail | null>;
-  createTicketWithFirstMessage(input: {
-    mailbox: Mailbox;
-    requesterId: string;
-    subject: string;
-    sourceIngestKey: string | null;
-    message: NewMessage;
-    attachments: NewAttachment[];
-  }): Promise<{ ticket: Ticket; messageId: string }>;
+  createTicketWithFirstMessage(input: NewTicketInput): Promise<{ ticket: Ticket; messageId: string }>;
+  /** The ticket created with this source ingest key (portal/app idempotency), if any. */
+  findTicketBySourceKey(key: string): Promise<Ticket | null>;
   appendMessage(input: {
     ticket: Ticket;
     message: NewMessage;
@@ -160,6 +205,10 @@ export interface HelpdeskRepo {
 }
 
 const now = () => Date.now();
+const DAY = 24 * 60 * 60 * 1000;
+/** How long a host-provisioned agent stays workable in a partition after the host last sent it there. */
+export const PARTITION_GRANT_TTL = 30 * DAY;
+const PARTITION_GRANT_REFRESH = DAY;
 
 function toTicket(r: TicketsTable): Ticket {
   return {
@@ -179,8 +228,30 @@ function toTicket(r: TicketsTable): Ticket {
     codeRelated: r.code_related == null ? null : Number(r.code_related) === 1,
     summary: r.summary ?? null,
     partition: r.partition_key ?? null,
+    source: r.source,
+    metadata: parseMetadata(r.metadata_json),
+    requesterVerified: r.requester_verified == null ? null : Number(r.requester_verified) === 1,
   };
 }
+
+function parseMetadata(json: string | null | undefined): Record<string, string> {
+  if (!json) return {};
+  try {
+    const v = JSON.parse(json) as unknown;
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    return Object.fromEntries(Object.entries(v).filter((e): e is [string, string] => typeof e[1] === "string"));
+  } catch {
+    return {};
+  }
+}
+
+const CONTACT_COLUMNS = ["id", "email", "name", "external_id"] as const;
+const toContact = (r: { id: string; email: string; name: string | null; external_id: string | null }): Contact => ({
+  id: r.id,
+  email: r.email,
+  name: r.name,
+  externalId: r.external_id ?? null,
+});
 
 function toAgent(r: AgentsTable): Agent {
   return {
@@ -195,8 +266,32 @@ function toAgent(r: AgentsTable): Agent {
   };
 }
 
+/** Per-mailbox settings, stored as JSON in mailboxes.settings_json. */
+interface MailboxSettings {
+  notifyNewTicket?: string[];
+}
+
+function mailboxSettings(json: string | null): MailboxSettings {
+  if (!json) return {};
+  try {
+    const v = JSON.parse(json) as unknown;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as MailboxSettings) : {};
+  } catch {
+    return {};
+  }
+}
+
 function toMailbox(r: MailboxesTable): Mailbox {
-  return { id: r.id, address: r.address, name: r.name, refPrefix: r.ref_prefix, fromName: r.from_name, partition: r.partition_key ?? null };
+  const s = mailboxSettings(r.settings_json);
+  return {
+    id: r.id,
+    address: r.address,
+    name: r.name,
+    refPrefix: r.ref_prefix,
+    fromName: r.from_name,
+    partition: r.partition_key ?? null,
+    notifyNewTicket: Array.isArray(s.notifyNewTicket) ? s.notifyNewTicket.filter((a): a is string => typeof a === "string") : [],
+  };
 }
 
 const milli = (x: number) => Math.round(Math.min(1, Math.max(0, x)) * 1000);
@@ -258,18 +353,89 @@ export class SqlRepo implements HelpdeskRepo {
     return (await this.getMailboxByAddress(address))!;
   }
 
+  async getMailbox(id: string): Promise<Mailbox | null> {
+    const r = await this.db.selectFrom("mailboxes").selectAll().where("id", "=", id).executeTakeFirst();
+    return r ? toMailbox(r) : null;
+  }
+
+  async updateMailbox(id: string, patch: MailboxPatch): Promise<Mailbox | null> {
+    const row = await this.db.selectFrom("mailboxes").selectAll().where("id", "=", id).executeTakeFirst();
+    if (!row) return null;
+    const set: Partial<MailboxesTable> = {};
+    if (patch.name !== undefined) set.name = patch.name;
+    if (patch.fromName !== undefined) set.from_name = patch.fromName;
+    if (patch.notifyNewTicket !== undefined) {
+      // Keep settings this version doesn't know about.
+      set.settings_json = JSON.stringify({ ...mailboxSettings(row.settings_json), notifyNewTicket: patch.notifyNewTicket });
+    }
+    if (Object.keys(set).length) await this.db.updateTable("mailboxes").set(set).where("id", "=", id).execute();
+    return this.getMailbox(id);
+  }
+
   async listMailboxAddresses(): Promise<string[]> {
     return (await this.db.selectFrom("mailboxes").select("address").execute()).map((r) => r.address);
   }
 
   async upsertContact(email: string, name: string | null) {
     const e = email.toLowerCase();
-    await this.insertIgnore(this.db.insertInto("contacts").values({ id: ulid(), email: e, name, created_at: now() }), "email").execute();
-    return (await this.db.selectFrom("contacts").select(["id", "email", "name"]).where("email", "=", e).executeTakeFirst())!;
+    await this.insertIgnore(this.db.insertInto("contacts").values({ id: ulid(), email: e, name, created_at: now(), external_id: null }), "email").execute();
+    return toContact((await this.db.selectFrom("contacts").select(CONTACT_COLUMNS).where("email", "=", e).executeTakeFirst())!);
+  }
+
+  async upsertContactByExternalId(input: { externalId: string; email: string; name: string }): Promise<Contact> {
+    const email = input.email.toLowerCase();
+    const byExternal = async () => this.db.selectFrom("contacts").select(CONTACT_COLUMNS).where("external_id", "=", input.externalId).executeTakeFirst();
+    const byEmail = async () => this.db.selectFrom("contacts").select(CONTACT_COLUMNS).where("email", "=", email).executeTakeFirst();
+    let mine = await byExternal();
+    const holder = await byEmail();
+    if (holder && holder.external_id !== null && holder.external_id !== input.externalId) {
+      throw new ContactIdentityConflictError(`${email} already belongs to another external user`);
+    }
+    if (!mine) {
+      if (holder) {
+        // Mail from this address already made a contact: it becomes this user's (guarded against a racing link).
+        await this.db.updateTable("contacts").set({ external_id: input.externalId, name: input.name }).where("id", "=", holder.id).where("external_id", "is", null).execute();
+      } else {
+        await this.insertIgnore(
+          this.db.insertInto("contacts").values({ id: ulid(), email, name: input.name, created_at: now(), external_id: input.externalId }),
+          ["email"],
+        ).execute();
+      }
+      mine = await byExternal();
+      if (!mine) throw new ContactIdentityConflictError(`${email} is being linked to another external user; retry`);
+      return toContact(mine);
+    }
+    if (mine.email !== email) {
+      if (holder) {
+        // The new address already has an unlinked contact (mail before sign-up): merge it into this one.
+        await this.atomic([
+          this.db.updateTable("tickets").set({ requester_id: mine.id }).where("requester_id", "=", holder.id),
+          this.db.updateTable("messages").set({ author_contact_id: mine.id }).where("author_contact_id", "=", holder.id),
+          this.db.deleteFrom("contacts").where("id", "=", holder.id).where("external_id", "is", null),
+          this.db.updateTable("contacts").set({ email, name: input.name }).where("id", "=", mine.id),
+        ]);
+      } else {
+        await this.db.updateTable("contacts").set({ email, name: input.name }).where("id", "=", mine.id).execute();
+      }
+    } else if (mine.name !== input.name) {
+      await this.db.updateTable("contacts").set({ name: input.name }).where("id", "=", mine.id).execute();
+    }
+    return toContact((await byExternal())!);
   }
 
   async getContact(id: string) {
-    return (await this.db.selectFrom("contacts").select(["id", "email", "name"]).where("id", "=", id).executeTakeFirst()) ?? null;
+    const r = await this.db.selectFrom("contacts").select(CONTACT_COLUMNS).where("id", "=", id).executeTakeFirst();
+    return r ? toContact(r) : null;
+  }
+
+  async getContactNames(ids: string[]) {
+    const out = new Map<string, string>();
+    const unique = [...new Set(ids)];
+    if (!unique.length) return out;
+    for (const r of await this.db.selectFrom("contacts").select(["id", "email", "name"]).where("id", "in", unique).execute()) {
+      out.set(r.id, r.name?.trim() || r.email.split("@")[0]!);
+    }
+    return out;
   }
 
   async findInboundByIngestKey(key: string) {
@@ -349,7 +515,7 @@ export class SqlRepo implements HelpdeskRepo {
    * atomically. The counter row is locked by the UPDATE until commit (Postgres and InnoDB), so the
    * following SELECT reads our own increment and concurrent creators serialise on that row.
    */
-  async createTicketWithFirstMessage(input: Parameters<HelpdeskRepo["createTicketWithFirstMessage"]>[0]) {
+  async createTicketWithFirstMessage(input: NewTicketInput) {
     const ticketId = ulid();
     const messageId = ulid();
     const t = now();
@@ -361,7 +527,7 @@ export class SqlRepo implements HelpdeskRepo {
       const number = Number(value);
       await tx.insertInto("tickets").values(this.ticketRow(input, ticketId, number, formatRef(input.mailbox.refPrefix, number), t)).execute();
       await this.insertMessageRows(tx, input.mailbox.id, ticketId, messageId, input.message, input.attachments, t);
-      await tx.insertInto("ticket_events").values(this.eventRow(ticketId, "ticket.created", "system:email", null, t)).execute();
+      await tx.insertInto("ticket_events").values(this.eventRow(ticketId, "ticket.created", input.actor ?? "system:email", null, t)).execute();
     });
     return { ticket: (await this.getTicket(ticketId))!, messageId };
   }
@@ -442,7 +608,17 @@ export class SqlRepo implements HelpdeskRepo {
     }
     if (filter.cursor) q = q.where("id", "<", filter.cursor);
     if (filter.partition !== undefined) q = q.where("partition_key", "=", filter.partition);
+    if (filter.requester) {
+      const { contactId, partition } = filter.requester;
+      q = q.where("requester_verified", "=", 1);
+      q = partition === null ? q.where("requester_id", "=", contactId) : q.where((eb) => eb.or([eb("requester_id", "=", contactId), eb("partition_key", "=", partition)]));
+    }
     return (await q.execute()).map(toTicket);
+  }
+
+  async findTicketBySourceKey(key: string) {
+    const r = await this.db.selectFrom("tickets").selectAll().where("source_ingest_key", "=", key).executeTakeFirst();
+    return r ? toTicket(r) : null;
   }
 
   async listMailboxes(opts: { partition?: string } = {}) {
@@ -462,7 +638,7 @@ export class SqlRepo implements HelpdeskRepo {
             eb("partition_key", "is", null),
             eb.or([
               eb("external_id", "is", null),
-              eb("id", "in", eb.selectFrom("agent_partitions").select("agent_id").where("partition_key", "in", [p, "*"])),
+              eb("id", "in", eb.selectFrom("agent_partitions").select("agent_id").where("partition_key", "in", [p, "*"]).where("created_at", ">=", now() - PARTITION_GRANT_TTL)),
             ]),
           ]),
         ]),
@@ -472,7 +648,9 @@ export class SqlRepo implements HelpdeskRepo {
   }
 
   async getAgentPartitions(agentId: string) {
-    return (await this.db.selectFrom("agent_partitions").select("partition_key").where("agent_id", "=", agentId).execute()).map((r) => r.partition_key);
+    const rows = await this.db.selectFrom("agent_partitions").select("partition_key")
+      .where("agent_id", "=", agentId).where("created_at", ">=", now() - PARTITION_GRANT_TTL).execute();
+    return rows.map((r) => r.partition_key);
   }
 
   async getAgent(id: string) {
@@ -542,11 +720,29 @@ export class SqlRepo implements HelpdeskRepo {
       await this.db.updateTable("agents").set({ email, name: input.name, role: input.role, active: 1 }).where("id", "=", row.id).execute();
       row = (await byExternal())!;
     }
-    await this.insertIgnore(
-      this.db.insertInto("agent_partitions").values({ agent_id: row.id, partition_key: input.partition ?? "*", created_at: now() }),
-      ["agent_id", "partition_key"],
-    ).execute();
+    await this.syncAgentPartition(row.id, input.partition);
     return toAgent(row);
+  }
+
+  /**
+   * Record that the host sent this agent for `partition` (null = every partition, stored as "*"). A grant lapses
+   * PARTITION_GRANT_TTL after the host last confirmed it, and a partitioned request withdraws "*", so an agent the
+   * host stops sending somewhere stops being assignable and listed there. Writes only when something changes
+   * (or about once a day per grant), not on every request.
+   */
+  private async syncAgentPartition(agentId: string, partition: string | null) {
+    const key = partition ?? "*";
+    const t = now();
+    const rows = await this.db.selectFrom("agent_partitions").select(["partition_key", "created_at"]).where("agent_id", "=", agentId).execute();
+    const mine = rows.find((r) => r.partition_key === key);
+    if (!mine) {
+      await this.insertIgnore(this.db.insertInto("agent_partitions").values({ agent_id: agentId, partition_key: key, created_at: t }), ["agent_id", "partition_key"]).execute();
+    } else if (Number(mine.created_at) < t - PARTITION_GRANT_REFRESH) {
+      await this.db.updateTable("agent_partitions").set({ created_at: t }).where("agent_id", "=", agentId).where("partition_key", "=", key).execute();
+    }
+    if (partition !== null && rows.some((r) => r.partition_key === "*")) {
+      await this.db.deleteFrom("agent_partitions").where("agent_id", "=", agentId).where("partition_key", "=", "*").execute();
+    }
   }
 
   async updateTicket(ticket: Ticket, patch: TicketPatch, actor: string): Promise<Ticket> {
@@ -571,6 +767,20 @@ export class SqlRepo implements HelpdeskRepo {
       set.assignee_id = patch.assigneeId;
       update = ticket.assigneeId === null ? update.where("assignee_id", "is", null) : update.where("assignee_id", "=", ticket.assigneeId);
       events.push(this.eventRow(ticket.id, "ticket.assigned", actor, { from: ticket.assigneeId, to: patch.assigneeId }, t));
+    }
+    if (patch.metadata !== undefined) {
+      const json = Object.keys(patch.metadata).length ? JSON.stringify(patch.metadata) : null;
+      if (JSON.stringify(patch.metadata) !== JSON.stringify(ticket.metadata)) {
+        set.metadata_json = json;
+        // No per-field compare for a map: any change since the caller's read is a conflict.
+        update = update.where("updated_at", "=", ticket.updatedAt);
+        events.push(this.eventRow(ticket.id, "ticket.metadata_changed", actor, { from: ticket.metadata, to: patch.metadata }, t));
+      }
+    }
+    if (patch.partition !== undefined && patch.partition !== ticket.partition) {
+      set.partition_key = patch.partition;
+      update = ticket.partition === null ? update.where("partition_key", "is", null) : update.where("partition_key", "=", ticket.partition);
+      events.push(this.eventRow(ticket.id, "ticket.partition_changed", actor, { from: ticket.partition, to: patch.partition }, t));
     }
     if (!events.length) return (await this.getTicket(ticket.id))!;
     set.updated_at = t;
@@ -726,7 +936,7 @@ export class SqlRepo implements HelpdeskRepo {
   }
 
   protected ticketRow(
-    input: Parameters<HelpdeskRepo["createTicketWithFirstMessage"]>[0],
+    input: NewTicketInput,
     id: string,
     number: number | ReturnType<typeof sql<number>>,
     ref: string | ReturnType<typeof sql<string>>,
@@ -742,7 +952,7 @@ export class SqlRepo implements HelpdeskRepo {
       priority: "normal",
       requester_id: input.requesterId,
       assignee_id: null,
-      source: "email",
+      source: input.source ?? "email",
       source_ingest_key: input.sourceIngestKey,
       tags_json: null,
       created_at: t,
@@ -752,7 +962,9 @@ export class SqlRepo implements HelpdeskRepo {
       category_confidence: null,
       code_related: null,
       summary: null,
-      partition_key: input.mailbox.partition ?? null,
+      partition_key: input.partition === undefined ? (input.mailbox.partition ?? null) : input.partition,
+      metadata_json: input.metadata && Object.keys(input.metadata).length ? JSON.stringify(input.metadata) : null,
+      requester_verified: input.requesterVerified === undefined ? null : input.requesterVerified ? 1 : 0,
     };
   }
 
@@ -774,7 +986,7 @@ export class SqlRepo implements HelpdeskRepo {
   }
 
   protected messageRow(mailboxId: string, ticketId: string, id: string, m: NewMessage, t: number) {
-    return { ...m, id, ticket_id: ticketId, mailbox_id: mailboxId, created_at: t };
+    return { ...m, author_contact_id: m.author_contact_id ?? null, id, ticket_id: ticketId, mailbox_id: mailboxId, created_at: t };
   }
 
   protected attachmentRows(messageId: string, attachments: NewAttachment[], t: number) {
@@ -810,7 +1022,7 @@ export class D1Repo extends SqlRepo {
     await this.d1.batch(queries.map((q) => toD1Statement(this.d1, q.compile())));
   }
 
-  override async createTicketWithFirstMessage(input: Parameters<HelpdeskRepo["createTicketWithFirstMessage"]>[0]) {
+  override async createTicketWithFirstMessage(input: NewTicketInput) {
     const ticketId = ulid();
     const messageId = ulid();
     const t = now();
@@ -824,7 +1036,7 @@ export class D1Repo extends SqlRepo {
       this.db.insertInto("tickets").values(this.ticketRow(input, ticketId, counterValue, ref, t)),
       this.db.insertInto("messages").values(this.messageRow(input.mailbox.id, ticketId, messageId, input.message, t)),
       ...(atts.length ? [this.db.insertInto("attachments").values(atts)] : []),
-      this.db.insertInto("ticket_events").values(this.eventRow(ticketId, "ticket.created", "system:email", null, t)),
+      this.db.insertInto("ticket_events").values(this.eventRow(ticketId, "ticket.created", input.actor ?? "system:email", null, t)),
     ]);
     const ticket = (await this.getTicket(ticketId))!;
     if (ticket.ref !== formatRef(input.mailbox.refPrefix, ticket.number)) {

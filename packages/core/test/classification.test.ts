@@ -78,6 +78,13 @@ describe("validation and decision", () => {
     expect(decide([low, high], snap)).toMatchObject({ category: "bug", acceptedBy: "b", summary: "asks" });
     expect(decide([low, { classifier: "c", durationMs: 1, result: null, error: "boom" }], snap)).toMatchObject({ category: "other", acceptedBy: null, confidence: 0, summary: "asks" });
   });
+  it("takes the priority from a lower-confidence hint when the accepted result has none", () => {
+    const hint: ClassificationAttempt = { classifier: "rules", durationMs: 1, result: { category: "question", confidence: 0.6, codeRelated: false, priority: "urgent" } };
+    const llm: ClassificationAttempt = { classifier: "llm", durationMs: 1, result: { category: "bug", confidence: 0.9, codeRelated: true } };
+    expect(decide([hint, llm], snap)).toMatchObject({ category: "bug", acceptedBy: "llm", priority: "urgent" });
+    expect(decide([hint, { ...llm, result: { ...llm.result!, priority: "low" } }], snap).priority).toBe("low");
+    expect(decide([hint], snap)).toMatchObject({ category: "other", acceptedBy: null, priority: "urgent" });
+  });
 });
 
 describe("llm classifier", () => {

@@ -16,18 +16,19 @@ import {
   prefixFromAddress,
   profileFromAddress,
 } from "./answers";
-import { InitError, type InitDb, planInit, writeInit } from "./init";
+import { InitError, type InitDb, NPX_CLI, planInit, writeInit } from "./init";
 import { runSetup, SetupError } from "./setup";
 import { realWrangler } from "./wrangler";
 
 const HELP = `
 CF Helpdesk
 
-  setup      Deploy a standalone help desk to your Cloudflare account (this repo's Worker)
   init       Add the help desk to an existing project (embedding; docs/EMBEDDING.md)
   migrate    Apply migrations to Postgres/MySQL (--driver, --url, --table-prefix, --record-only)
+  setup      Deploy a standalone help desk to your Cloudflare account (needs a checkout of
+             github.com/rolandihms/cf-ticketing: it deploys that repo's Worker)
 
-Usage: npm run setup -- [options]
+Usage: npm run setup -- [options]      (in a checkout)
 
   --address <email>        Support address customers write to (e.g. support@acme.com)
   --name <text>            Display name in acknowledgements (default: "<Domain> Support")
@@ -46,7 +47,8 @@ Usage: npm run setup -- [options]
 
 Prerequisites: \`npx wrangler login\`, and the domain must be a zone in your Cloudflare account.
 
-Usage: npm run cli -- init [options]      (from this repo; --cwd points at your project)
+Usage: npx @rolandihms/helpdesk-cli init [options]
+   or: npm run cli -- init [options]      (in a checkout; --cwd points at your project)
 
   --cwd <path>             Your project's root (default: current directory)
   --dir <path>             Folder for the help desk Worker, relative to --cwd (default: helpdesk)
@@ -59,13 +61,17 @@ Usage: npm run cli -- init [options]      (from this repo; --cwd points at your 
   --force                  Also overwrite the files meant for editing
 `;
 
-const workerDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../../apps/worker");
+// src/ (tsx in a checkout) and dist/ (published) both sit one level below the package root.
+const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const workerDir = resolve(pkgRoot, "../../apps/worker");
 const repoRoot = resolve(workerDir, "../..");
+/** Running from a checkout of the repo, rather than from the published package. */
+const inCheckout = existsSync(join(workerDir, "wrangler.jsonc"));
 
 async function main() {
   const command = process.argv[2];
   if (command === "migrate") {
-    const { runMigrateCli } = await import("@cf-helpdesk/db/node-migrate");
+    const { runMigrateCli } = await import("@rolandihms/helpdesk-db/node-migrate");
     process.exitCode = await runMigrateCli(process.argv.slice(3));
     return;
   }
@@ -91,6 +97,11 @@ async function main() {
     },
   });
   if (f.help || (positionals[0] && positionals[0] !== "setup")) return console.log(HELP);
+  if (!inCheckout) {
+    console.error("\n✘ setup deploys this repo's Worker: clone https://github.com/rolandihms/cf-ticketing and run `npm run setup` there.\n  To add the help desk to your own project, use `cf-helpdesk init`.\n");
+    process.exitCode = 1;
+    return;
+  }
 
   const interactive = !f.yes && process.stdin.isTTY;
   const rl = interactive ? createInterface({ input: process.stdin, output: process.stdout }) : null;
@@ -226,8 +237,9 @@ async function init(argv: string[]) {
   try {
     if (!["d1", "postgres", "mysql", "planetscale"].includes(db)) throw new InitError("--db must be d1, postgres, mysql or planetscale");
     const packagesDir = resolve(repoRoot, "packages");
-    const ownVersion = JSON.parse(readFileSync(join(repoRoot, "packages/cli/package.json"), "utf8")).version as string;
-    const depsKind = f.deps ?? (existsSync(join(packagesDir, "worker/package.json")) ? "file" : "npm");
+    const ownVersion = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8")).version as string;
+    const depsKind = f.deps ?? (inCheckout ? "file" : "npm");
+    if (depsKind === "file" && !inCheckout) throw new InitError("--deps file needs a checkout of the repo; use --deps npm");
     const plan = await planInit({
       cwd,
       dir: f.dir ?? "helpdesk",
@@ -237,8 +249,9 @@ async function init(argv: string[]) {
       ...(f["prisma-dir"] !== undefined ? { prismaDir: f["prisma-dir"] } : {}),
       ...(f["model-prefix"] ? { modelPrefix: f["model-prefix"] } : {}),
       deps: depsKind === "file" ? { kind: "file", packagesDir } : { kind: "npm", version: ownVersion },
-      templatePath: join(workerDir, "wrangler.jsonc"),
-      cliCommand: depsKind === "file" ? `npm --prefix ${repoRoot} run cli --` : "npx cf-helpdesk",
+      // The published package carries a copy of apps/worker/wrangler.jsonc (scripts/release.mjs).
+      templatePath: inCheckout ? join(workerDir, "wrangler.jsonc") : join(pkgRoot, "templates/wrangler.jsonc"),
+      cliCommand: depsKind === "file" ? `npm --prefix ${repoRoot} run cli --` : NPX_CLI,
       force: f.force,
     });
     const report = await writeInit(cwd, plan.files, f.force);

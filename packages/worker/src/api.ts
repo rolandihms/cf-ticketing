@@ -1,33 +1,35 @@
-import { type Agent, type AgentRole, normalizeMessageId, sha256Hex, subjectWithRef, type Ticket, TICKET_PRIORITIES, TICKET_STATUSES, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
-import { AgentIdentityConflictError, type HelpdeskRepo, TicketConflictError, type TicketFilter, type TicketPatch, withRepo } from "@cf-helpdesk/db";
+import { type Agent, type AgentRole, normalizeMessageId, sha256Hex, subjectWithRef, type Ticket, TICKET_PRIORITIES, TICKET_STATUSES, type TicketPriority, type TicketStatus } from "@rolandihms/helpdesk-core";
+import { AgentIdentityConflictError, ContactIdentityConflictError, type HelpdeskRepo, type MessagesTable, TicketConflictError, type TicketFilter, type TicketPatch, withRepo } from "@rolandihms/helpdesk-db";
 import { type Context, Hono } from "hono";
-import { AccessUnavailableError, parseTrustedIdentity, type Principal, secretsEqual, verifyAccessJwt } from "./auth";
+import { AccessUnavailableError, parseTrustedIdentity, type Principal, type RequesterPrincipal, secretsEqual, type StaffPrincipal, verifyAccessJwt } from "./auth";
 import { newMessageId, type SendFormat, sendViaBinding } from "./email/outbound";
 import type { HelpdeskEnv } from "./env";
 import type { HelpdeskOptions } from "./options";
+import { type AppEnv, body, type C, headerText, HttpError, idempotencyKey, metadataField, partitionField, preview, senderVerifiedOf, storeBody, str } from "./http";
+import * as requester from "./requester";
 import { type AgentEventsParams, queueAgentEvents } from "./workflow";
 
-type AppEnv = { Bindings: HelpdeskEnv; Variables: { principal: Principal } };
-type C = Context<AppEnv>;
+/** Mailbox addresses go into From/To headers of every ack and reply: keep them to plain, header-safe addresses. */
+const MAILBOX_ADDRESS_RE = /^[a-z0-9._%+-]{1,64}@([a-z0-9-]{1,63}\.)+[a-z]{2,63}$/;
+
 type AgentEvents = AgentEventsParams["events"];
 
-class HttpError extends Error {
-  constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 415 | 502 | 503,
-    message: string,
-  ) {
-    super(message);
-  }
-}
 
 const principal = (c: C) => c.get("principal");
 
+/** The caller, who must be staff (an agent, admin or service). Requesters get 403. */
+function staff(c: C): StaffPrincipal {
+  const p = principal(c);
+  if (p.kind === "requester") throw new HttpError(403, "not available to requesters");
+  return p;
+}
+
 function requireAdmin(c: C) {
-  if (principal(c).role !== "admin") throw new HttpError(403, "admin only");
+  if (staff(c).role !== "admin") throw new HttpError(403, "admin only");
 }
 
 /** Can this caller see records in `partition`? Unrestricted callers see everything. */
-const visible = (p: Principal, partition: string | null) => p.partition === null || p.partition === partition;
+const visible = (p: StaffPrincipal, partition: string | null) => p.partition === null || p.partition === partition;
 
 /** Browsers send Sec-Fetch-Site and/or Origin; tools like curl send neither and are allowed. */
 function sameOrigin(c: C): boolean {
@@ -41,53 +43,49 @@ function getCookie(header: string | undefined, name: string): string | undefined
   return header?.split(/;\s*/).find((p) => p.startsWith(`${name}=`))?.slice(name.length + 1);
 }
 
-async function body<T>(c: C): Promise<Partial<T>> {
-  // JSON only: an HTML form can't send application/json cross-site without a CORS preflight.
-  if (!(c.req.header("content-type") ?? "").toLowerCase().startsWith("application/json")) {
-    throw new HttpError(415, "content-type must be application/json");
-  }
-  try {
-    const b = await c.req.json();
-    if (!b || typeof b !== "object" || Array.isArray(b)) throw new Error();
-    return b as Partial<T>;
-  } catch {
-    throw new HttpError(400, "body must be a JSON object");
-  }
+
+
+
+
+/** New-ticket notification recipients: plain addresses (they become To headers), lowercased, unique, at most 10. */
+function notifyList(v: unknown): string[] {
+  if (!Array.isArray(v)) throw new HttpError(400, "notifyNewTicket must be an array of email addresses");
+  const out = [...new Set(v.map((a) => (typeof a === "string" ? a.trim().toLowerCase() : "")))];
+  if (out.length > 10) throw new HttpError(400, "notifyNewTicket allows at most 10 addresses");
+  const bad = out.find((a) => !MAILBOX_ADDRESS_RE.test(a));
+  if (bad !== undefined) throw new HttpError(400, `notifyNewTicket: ${bad ? `"${bad}"` : "an entry"} is not a plain email address`);
+  return out;
 }
 
-const str = (v: unknown, field: string, max: number): string => {
-  if (typeof v !== "string" || !v.trim()) throw new HttpError(400, `${field} is required`);
-  if (v.length > max) throw new HttpError(400, `${field} is too long (max ${max})`);
-  return v;
-};
-
-/** A partition from a request body: undefined (not given), null, or a short opaque string. */
-function partitionField(v: unknown): string | null | undefined {
-  if (v === undefined || v === null) return v;
-  if (typeof v !== "string" || !/^[\x21-\x7e]{1,128}$/.test(v)) throw new HttpError(400, "partition: null or 1-128 printable ASCII characters");
-  return v;
+/**
+ * A message as the API returns it. An allowlist: R2 keys, the ingest key and the raw auth record stay internal.
+ * sender_verified: for inbound mail, whether DMARC proved the From address (null for our own messages and old rows).
+ */
+function publicMessage(m: MessagesTable) {
+  const senderVerified = senderVerifiedOf(m);
+  return {
+    id: m.id, ticket_id: m.ticket_id, mailbox_id: m.mailbox_id, direction: m.direction, kind: m.kind,
+    message_id_hdr: m.message_id_hdr, provider_msg_id: m.provider_msg_id, in_reply_to: m.in_reply_to,
+    from_addr: m.from_addr, to_json: m.to_json, cc_json: m.cc_json, subject: m.subject, text_preview: m.text_preview,
+    author_agent_id: m.author_agent_id, author_contact_id: m.author_contact_id, created_at: m.created_at, sender_verified: senderVerified,
+  };
 }
+
 
 /** The ticket, if it exists and the caller may see it (404 otherwise: never reveal other partitions). */
 async function ticketOr404(c: C, repo: HelpdeskRepo, ref: string) {
   const t = await repo.findTicketByRef(ref);
-  if (!t || !visible(principal(c), t.partition)) throw new HttpError(404, "ticket not found");
+  if (!t || !visible(staff(c), t.partition)) throw new HttpError(404, "ticket not found");
   return t;
 }
 
 async function messageOr404(c: C, repo: HelpdeskRepo, id: string) {
   const msg = await repo.getMessage(id);
   const ticket = msg && (await repo.getTicket(msg.ticket_id));
-  if (!msg || !ticket || !visible(principal(c), ticket.partition)) throw new HttpError(404, "message not found");
+  if (!msg || !ticket || !visible(staff(c), ticket.partition)) throw new HttpError(404, "message not found");
   return msg;
 }
 
-/** Store a body in R2 next to the ticket's mail; returns the key. */
-async function storeBody(env: HelpdeskEnv, ticketId: string, kind: "note" | "reply", text: string) {
-  const key = `tickets/${ticketId}/${kind}s/${crypto.randomUUID()}.txt`;
-  await env.MAIL.put(key, text, { httpMetadata: { contentType: "text/plain; charset=utf-8" } });
-  return key;
-}
 
 /**
  * Can this agent work tickets in `partition`? Restricted agents: only their own. Host-provisioned
@@ -100,7 +98,6 @@ async function canWork(repo: HelpdeskRepo, agent: Agent, partition: string | nul
   return seen.includes("*") || (partition !== null && seen.includes(partition));
 }
 
-const preview = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 500);
 /** RFC 5987 value: encodeURIComponent leaves ' ( ) * ! unencoded, which aren't attr-chars. */
 const rfc5987 = (s: string) => encodeURIComponent(s).replace(/['()*!]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
@@ -128,6 +125,7 @@ export function createApi(config: HelpdeskOptions) {
     if (err instanceof HttpError) return c.json({ error: err.message }, err.status);
     if (err instanceof TicketConflictError) return c.json({ error: err.message }, 409);
     if (err instanceof AgentIdentityConflictError) return c.json({ error: err.message }, 409);
+    if (err instanceof ContactIdentityConflictError) return c.json({ error: err.message }, 409);
     if (err instanceof AccessUnavailableError) return c.json({ error: "sign-in temporarily unavailable" }, 503);
     console.error(JSON.stringify({ msg: "api error", error: String(err), stack: (err as Error).stack }));
     return c.json({ error: "internal error" }, 500);
@@ -152,8 +150,16 @@ export function createApi(config: HelpdeskOptions) {
       }
       const id = parseTrustedIdentity(c.req.header("x-helpdesk-principal"));
       if (typeof id === "string") throw new HttpError(400, id);
+      if (id.role === "requester") {
+        // A customer: a contact, never an agent (so staff who also raise tickets don't collide).
+        const contact = await withRepo(env, (r) => r.upsertContactByExternalId(id));
+        if (!requester.allows(c.req.method, new URL(c.req.url).pathname)) throw new HttpError(403, "not available to requesters");
+        c.set("principal", { kind: "requester", role: "requester", actor: `contact:${contact.id}`, contact, partition: id.partition, visibility: id.visibility ?? "own", via: "trusted" });
+        return next();
+      }
       // The host is the source of truth for who this is: provision or re-sync the agent every time.
-      const agent = await withRepo(env, (r) => r.upsertAgentByExternalId(id));
+      const role = id.role;
+      const agent = await withRepo(env, (r) => r.upsertAgentByExternalId({ externalId: id.externalId, email: id.email, name: id.name, role, partition: id.partition }));
       // (The upsert also records that this agent works in id.partition; see canWork.)
       c.set("principal", { kind: "agent", role: agent.role, actor: `agent:${agent.id}`, agent, partition: id.partition, via: "trusted" });
       return next();
@@ -191,13 +197,13 @@ export function createApi(config: HelpdeskOptions) {
   api.get("/api/me", (c) => c.json(principal(c)));
 
   api.get("/api/agents", async (c) => {
-    const p = principal(c);
+    const p = staff(c);
     return c.json({ agents: await withRepo(c.env, (r) => r.listAgents(p.partition === null ? {} : { partition: p.partition })) });
   });
 
   api.post("/api/agents", async (c) => {
     requireAdmin(c);
-    const p = principal(c);
+    const p = staff(c);
     const b = await body<{ email: string; name: string; role: AgentRole; partition: string | null }>(c);
     const email = str(b.email, "email", 320);
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new HttpError(400, "email is invalid");
@@ -219,7 +225,7 @@ export function createApi(config: HelpdeskOptions) {
 
   api.patch("/api/agents/:id", async (c) => {
     requireAdmin(c);
-    const p = principal(c);
+    const p = staff(c);
     const b = await body<{ name: string; role: AgentRole; active: boolean; partition: string | null }>(c);
     if (b.role !== undefined && !ROLES.includes(b.role)) throw new HttpError(400, `role must be one of ${ROLES.join(", ")}`);
     if (b.active !== undefined && typeof b.active !== "boolean") throw new HttpError(400, "active must be a boolean");
@@ -246,31 +252,61 @@ export function createApi(config: HelpdeskOptions) {
   });
 
   api.get("/api/mailboxes", async (c) => {
-    const p = principal(c);
+    const p = staff(c);
     return c.json({ mailboxes: await withRepo(c.env, (r) => r.listMailboxes(p.partition === null ? {} : { partition: p.partition })) });
   });
 
   api.post("/api/mailboxes", async (c) => {
     requireAdmin(c);
-    const p = principal(c);
-    const b = await body<{ address: string; name: string; refPrefix: string; fromName?: string; partition: string | null }>(c);
-    if (!b.address?.includes("@") || !/^[A-Z0-9]{2,10}$/i.test(b.refPrefix ?? "")) {
-      throw new HttpError(400, "address and refPrefix (2-10 alphanumerics) required");
-    }
-    const partition = p.partition ?? partitionField(b.partition) ?? null;
+    const p = staff(c);
+    // A mailbox decides which tenant an address's mail lands in, so only an unrestricted admin (the operator) adds one.
+    if (p.partition !== null) throw new HttpError(403, "only an unrestricted admin can add mailboxes");
+    const b = await body<{ address: string; name: string; refPrefix: string; fromName?: string | null; partition: string | null }>(c);
+    const address = str(b.address, "address", 254).trim().toLowerCase();
+    if (!MAILBOX_ADDRESS_RE.test(address)) throw new HttpError(400, "address must be a plain email address (local@domain.tld)");
+    if (!/^[A-Z0-9]{2,10}$/i.test(b.refPrefix ?? "")) throw new HttpError(400, "refPrefix must be 2-10 alphanumerics");
+    const name = headerText(b.name, "name");
+    const fromName = b.fromName === undefined || b.fromName === null ? null : headerText(b.fromName, "fromName");
+    const partition = partitionField(b.partition) ?? null;
     const mailbox = await withRepo(c.env, async (r) => {
-      const existing = await r.getMailboxByAddress(b.address!);
-      if (existing && (!visible(p, existing.partition) || existing.partition !== partition)) throw new HttpError(409, "address is already in use");
-      return r.createMailbox({ address: b.address!, name: str(b.name, "name", 255), refPrefix: b.refPrefix!, fromName: b.fromName ?? null, partition });
+      const existing = await r.getMailboxByAddress(address);
+      if (existing && existing.partition !== partition) throw new HttpError(409, "address is already in use");
+      return r.createMailbox({ address, name, refPrefix: b.refPrefix!, fromName, partition });
     });
     return c.json(mailbox, 201);
+  });
+
+  api.patch("/api/mailboxes/:id", async (c) => {
+    requireAdmin(c);
+    const p = staff(c);
+    const b = await body<{ name: string; fromName: string | null; notifyNewTicket: string[] }>(c);
+    const notify = b.notifyNewTicket === undefined ? undefined : notifyList(b.notifyNewTicket);
+    const mailbox = await withRepo(c.env, async (r) => {
+      const current = await r.getMailbox(c.req.param("id"));
+      // Restricted admins manage only their own partition's mailboxes.
+      if (!current || !visible(p, current.partition) || (p.partition !== null && current.partition === null)) return null;
+      if (notify) {
+        // Notifying a help desk address would open a ticket per notification.
+        const own = new Set(await r.listMailboxAddresses());
+        const loop = notify.find((a) => own.has(a));
+        if (loop) throw new HttpError(400, `${loop} is a help desk mailbox; notify a person's address instead`);
+      }
+      return r.updateMailbox(current.id, {
+        ...(b.name !== undefined ? { name: headerText(b.name, "name") } : {}),
+        ...(b.fromName !== undefined ? { fromName: b.fromName === null || b.fromName === "" ? null : headerText(b.fromName, "fromName") } : {}),
+        ...(notify ? { notifyNewTicket: notify } : {}),
+      });
+    });
+    return mailbox ? c.json(mailbox) : c.json({ error: "mailbox not found" }, 404);
   });
 
   // ---- Tickets ---------------------------------------------------------------------------------
 
   api.get("/api/tickets", async (c) => {
+    const who = principal(c);
+    if (who.kind === "requester") return requester.listTickets(c, who);
     const q = c.req.query();
-    const p = principal(c);
+    const p = staff(c);
     const n = Number(q.limit ?? 25);
     const filter: TicketFilter = { limit: Number.isFinite(n) ? Math.max(1, Math.min(Math.trunc(n), 100)) : 25 };
     if (q.status) {
@@ -294,18 +330,36 @@ export function createApi(config: HelpdeskOptions) {
     return c.json({ tickets, nextCursor: tickets.length === filter.limit ? tickets.at(-1)!.id : null });
   });
 
+  /** Raise a ticket from the host app: a requester for itself, or staff on a customer's behalf (requester.ts). */
+  api.post("/api/tickets", (c) => requester.createTicket(c, principal(c)));
+
+  /** A requester's reply from the host app (requester.ts). Staff reply by email with /replies. */
+  api.post("/api/tickets/:ref/messages", (c) => {
+    const who = principal(c);
+    if (who.kind !== "requester") throw new HttpError(403, "staff reply with POST /api/tickets/:ref/replies");
+    return requester.postMessage(c, who, c.req.param("ref"));
+  });
+
   api.get("/api/tickets/:ref", async (c) => {
+    const who = principal(c);
+    if (who.kind === "requester") return requester.getTicket(c, who, c.req.param("ref"));
     const detail = await withRepo(c.env, (r) => r.getTicketDetail(c.req.param("ref")));
-    if (!detail || !visible(principal(c), detail.ticket.partition)) return c.json({ error: "ticket not found" }, 404);
+    if (!detail || !visible(who, detail.ticket.partition)) return c.json({ error: "ticket not found" }, 404);
     // R2 keys are internal; bodies and files are served by the endpoints below.
     const attachments = detail.attachments.map(({ r2_key: _key, ...a }) => a);
-    return c.json({ ...detail, attachments });
+    return c.json({ ...detail, messages: detail.messages.map(publicMessage), attachments });
   });
 
   api.patch("/api/tickets/:ref", async (c) => {
-    const b = await body<{ status: TicketStatus; priority: TicketPriority; assignee: string | null }>(c);
-    const p = principal(c);
+    const b = await body<{ status: TicketStatus; priority: TicketPriority; assignee: string | null; metadata: Record<string, string>; partition: string | null }>(c);
+    const p = staff(c);
     const patch: TicketPatch = {};
+    if (b.metadata !== undefined) patch.metadata = metadataField(b.metadata);
+    if (b.partition !== undefined) {
+      // Moving a ticket between tenants (e.g. a verified email ticket to the sender's company): operators only.
+      if (p.role !== "admin" || p.partition !== null) throw new HttpError(403, "only an unrestricted admin can change a ticket's partition");
+      patch.partition = partitionField(b.partition) ?? null;
+    }
     if (b.status !== undefined) {
       if (!TICKET_STATUSES.includes(b.status)) throw new HttpError(400, `status must be one of ${TICKET_STATUSES.join(", ")}`);
       patch.status = b.status;
@@ -337,7 +391,7 @@ export function createApi(config: HelpdeskOptions) {
   api.post("/api/tickets/:ref/notes", async (c) => {
     const b = await body<{ text: string }>(c);
     const text = str(b.text, "text", 50_000);
-    const p = principal(c);
+    const p = staff(c);
     const { ticket, note } = await withRepo(c.env, async (r) => {
       const ticket = await ticketOr404(c, r, c.req.param("ref"));
       const { messageId } = await r.appendMessage({
@@ -370,9 +424,8 @@ export function createApi(config: HelpdeskOptions) {
     const text = str(b.text, "text", 50_000);
     const nextStatus = b.status ?? "pending";
     if (!TICKET_STATUSES.includes(nextStatus)) throw new HttpError(400, `status must be one of ${TICKET_STATUSES.join(", ")}`);
-    const p = principal(c);
-    const idemHeader = c.req.header("idempotency-key");
-    if (idemHeader !== undefined && !/^[\w.:-]{1,128}$/.test(idemHeader)) throw new HttpError(400, "Idempotency-Key: 1-128 chars of [A-Za-z0-9_.:-]");
+    const p = staff(c);
+    const idemHeader = idempotencyKey(c);
 
     const out = await withRepo(c.env, async (r) => {
       let ticket = await ticketOr404(c, r, c.req.param("ref"));
@@ -440,7 +493,8 @@ export function createApi(config: HelpdeskOptions) {
 
   /** Full text of a message, note or reply (bodies live in R2). */
   api.get("/api/messages/:id/text", async (c) => {
-    const msg = await withRepo(c.env, (r) => messageOr404(c, r, c.req.param("id")));
+    const who = principal(c);
+    const msg = await withRepo(c.env, (r) => (who.kind === "requester" ? requester.messageOr404(c, r, who, c.req.param("id")) : messageOr404(c, r, c.req.param("id"))));
     if (!msg.text_r2_key) return c.text(msg.text_preview ?? "");
     const obj = await c.env.MAIL.get(msg.text_r2_key);
     return c.text(obj ? await obj.text() : (msg.text_preview ?? ""));
@@ -454,7 +508,8 @@ export function createApi(config: HelpdeskOptions) {
     const att = await withRepo(c.env, async (r) => {
       const a = await r.getAttachment(c.req.param("id"));
       if (!a) throw new HttpError(404, "attachment not found");
-      await messageOr404(c, r, a.message_id);
+      const who = principal(c);
+      await (who.kind === "requester" ? requester.messageOr404(c, r, who, a.message_id) : messageOr404(c, r, a.message_id));
       return a;
     });
     const obj = await c.env.MAIL.get(att.r2_key);

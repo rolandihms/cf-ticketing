@@ -1,5 +1,5 @@
 // The proxy: this app's session → a trusted identity → the help desk, over the service binding.
-import { forwardToHelpdesk } from "@cf-helpdesk/client/server";
+import { forwardToHelpdesk } from "@rolandihms/helpdesk-client/server";
 import { createFileRoute } from "@tanstack/react-router";
 import { env } from "cloudflare:workers";
 import { identityFromRequest } from "../../lib/identity";

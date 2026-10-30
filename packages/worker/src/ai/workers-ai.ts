@@ -1,4 +1,4 @@
-import type { LlmChatRequest, LlmChatResponse, LlmProvider } from "@cf-helpdesk/core";
+import type { LlmChatRequest, LlmChatResponse, LlmProvider } from "@rolandihms/helpdesk-core";
 
 export const DEFAULT_WORKERS_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 

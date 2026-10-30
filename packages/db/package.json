@@ -1,6 +1,6 @@
 {
-  "name": "@cf-helpdesk/db",
-  "version": "0.0.0",
+  "name": "@rolandihms/helpdesk-db",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -17,10 +17,9 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
-    "@cf-helpdesk/core": "*",
-    "@planetscale/database": "^2.0.0",
+    "@rolandihms/helpdesk-core": "*",
+    "@planetscale/database": "^1.20.2",
     "kysely": "^0.29.6",
-    "kysely-planetscale": "^1.7.1",
     "mysql2": "^3.24.6",
     "pg": "^8.23.1",
     "ulidx": "^2.4.1"

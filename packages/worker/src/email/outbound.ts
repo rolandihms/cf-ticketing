@@ -13,8 +13,8 @@ export interface OutboundEmail {
   inReplyTo?: string | null;
   references?: string[];
   ticketRef: string;
-  /** RFC 3834: mark automatic responses (acks) so other autoresponders don't reply. */
-  autoSubmitted?: boolean;
+  /** RFC 3834: mark automatic mail so autoresponders don't reply. true: an ack ("auto-replied"). */
+  autoSubmitted?: boolean | "auto-generated";
 }
 
 export type SendFormat = "raw" | "builder";
@@ -25,7 +25,7 @@ export function threadingHeaders(m: OutboundEmail): Record<string, string> {
   const refs = [...(m.references ?? [])].slice(-20);
   if (m.inReplyTo && !refs.includes(m.inReplyTo)) refs.push(m.inReplyTo);
   if (refs.length) h["References"] = refs.join(" ");
-  if (m.autoSubmitted) h["Auto-Submitted"] = "auto-replied";
+  if (m.autoSubmitted) h["Auto-Submitted"] = m.autoSubmitted === true ? "auto-replied" : m.autoSubmitted;
   return h;
 }
 

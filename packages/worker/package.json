@@ -1,6 +1,6 @@
 {
-  "name": "@cf-helpdesk/worker",
-  "version": "0.0.0",
+  "name": "@rolandihms/helpdesk-worker",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -11,10 +11,10 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
-    "@cf-helpdesk/core": "*",
-    "@cf-helpdesk/db": "*",
+    "@rolandihms/helpdesk-core": "*",
+    "@rolandihms/helpdesk-db": "*",
     "hono": "^4.13.0",
-    "postal-mime": "^4.0.6"
+    "postal-mime": "^4.0.8"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261015.1",

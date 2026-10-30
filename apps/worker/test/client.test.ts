@@ -1,7 +1,7 @@
 // The published client and proxy helper against the real Worker: the contract a host app relies on.
-import { createHelpdeskClient, HelpdeskApiError } from "@cf-helpdesk/client";
-import { forwardToHelpdesk, type HostIdentity, trustedHeaders } from "@cf-helpdesk/client/server";
-import { D1Dialect, D1Repo } from "@cf-helpdesk/db";
+import { createHelpdeskClient, HelpdeskApiError } from "@rolandihms/helpdesk-client";
+import { forwardToHelpdesk, type HostIdentity, trustedHeaders } from "@rolandihms/helpdesk-client/server";
+import { D1Dialect, D1Repo } from "@rolandihms/helpdesk-db";
 import { env } from "cloudflare:workers";
 import { Kysely } from "kysely";
 import { introspectWorkflow } from "cloudflare:test";
@@ -38,7 +38,7 @@ async function seedTicket(partition: string) {
   })).ticket;
 }
 
-describe("@cf-helpdesk/client against the Worker", () => {
+describe("@rolandihms/helpdesk-client against the Worker", () => {
   it("works a ticket end to end as a trusted host user", async () => {
     const t = await seedTicket("company:1");
     const hd = createHelpdeskClient({ baseUrl: "https://helpdesk.internal/api", fetch: binding.fetch, headers: trustedHeaders("svc-key", kim) });

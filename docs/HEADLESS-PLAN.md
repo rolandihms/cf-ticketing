@@ -71,14 +71,14 @@ Factory, prefixing, partitions, trusted principal, agent events and attachments 
 ### H2: SDK, CLI and reference app ✅ built (branch `feat/headless-h2`)
 
 Built:
-- `@cf-helpdesk/client` (plus `/server`: `forwardToHelpdesk`, `trustedHeaders`);
+- `@rolandihms/helpdesk-client` (plus `/server`: `forwardToHelpdesk`, `trustedHeaders`);
 - `cf-helpdesk init` and `cf-helpdesk migrate`;
 - the generated Prisma models, verified on MySQL with Prisma 6;
 - `examples/tanstack-start` with a headless-Chrome E2E in CI.
 
-Not yet: `@cf-helpdesk/hono` (`forwardToHelpdesk` covers it in about 5 lines); npm publishing (packages are still private; `init --deps file` links a checkout).
-- **`@cf-helpdesk/client`**: a framework-agnostic typed fetch client (types from the API's zod schemas). It works in browsers, Workers and Node.
-- **`@cf-helpdesk/hono`**: `helpdeskProxy({ binding, resolvePrincipal })`. Other frameworks use the client plus a short proxy example.
+Publishing: `npm run release -- build`, `stage`, then `publish` (scripts/release.mjs) bundles each package to `dist/` and publishes a copy whose `package.json` points there. The sources stay `private`. Not yet: `@rolandihms/helpdesk-hono` (`forwardToHelpdesk` covers it in about 5 lines).
+- **`@rolandihms/helpdesk-client`**: a framework-agnostic typed fetch client (types from the API's zod schemas). It works in browsers, Workers and Node.
+- **`@rolandihms/helpdesk-hono`**: `helpdeskProxy({ binding, resolvePrincipal })`. Other frameworks use the client plus a short proxy example.
 - **`cf-helpdesk` CLI** (one bin):
   - `init` writes `helpdesk/` into the host repo: `wrangler.jsonc`, `worker.ts`, `helpdesk.config.ts`, the SQL and the Prisma file;
   - `setup` provisions resources (the existing logic) with `--table-prefix`;
@@ -86,21 +86,59 @@ Not yet: `@cf-helpdesk/hono` (`forwardToHelpdesk` covers it in about 5 lines); n
 - **`examples/tanstack-start`**: an unstyled reference app with 4 routes (inbox, ticket, reply/note, assign) on `client`. It runs in **CI** against the local Worker with a fake trusted principal. This is the end-to-end test of the exact contract Realty uses.
 - Publish to npm with changesets. The scope name is still to be decided.
 
-### H3: Realty On Record integration
+### H3: Realty On Record integration (in progress)
+
+Done locally (portal_he_ui branch `feat/helpdesk`, not pushed):
+- `cf-helpdesk init`, which wrote `helpdesk/` (Worker `realty-helpdesk`, portal-tech account, refs `ROR-…`) and `server/prisma/helpdesk.prisma` (`server/package.json` loads the `prisma` folder);
+- `realty-api` mounts `/api/v1/helpdesk/*` behind `requireAdminMiddleware` and forwards to the `HELPDESK` binding as an unrestricted admin;
+- `@rolandihms/helpdesk-client` has no dependencies, so bun installs it from a `file:` path.
+
+Published: 0.1.0 on 2026-10-27. A security review of the published code found no high or critical issues; 0.1.1 fixes what it did find:
+- the generated README ran `npx cf-helpdesk`, a name npx would fetch from the registry;
+- inbound mail now needs `dmarc=pass` from Email Routing before it gets an ack or can join a ticket by its ref (`requireDmarc`), and agents see `sender_verified`;
+- mailbox addresses and names are validated, and only unrestricted admins add mailboxes;
+- ticket detail no longer returns R2 keys or the raw auth record;
+- host-provisioned agents' partition grants lapse after 30 days unconfirmed, and a partitioned request withdraws global access;
+- HTML-only mail gets a text body.
+
+0.1.2 (prepared 2026-10-30, no schema change):
+- each mailbox can email up to 10 staff addresses when it opens a new ticket (`notifyNewTicket`, `PATCH /api/mailboxes/:id`, optional `TICKET_URL` link; docs/INTEGRATIONS.md §3);
+- a lower-confidence classifier's priority is kept when the accepted result has none (e.g. a rules hint marking an outage urgent).
+
+0.1.3 (2026-10-30): the PlanetScale driver works again. `@planetscale/database` 2.0 (2026-09-24) rejects query parameters, which `kysely-planetscale` passes, so every PlanetScale query failed (first seen on Realty's production help desk; D1, Postgres and MySQL were unaffected). `helpdesk-db` now pins `^1.20.2` and carries its own copy of the small Kysely dialect, so an app's lockfile can't hand it a 2.x client; a fake-endpoint test covers queries and transactions.
+
+0.2.0 (prepared 2026-10-30): requesters, customers of the host app (docs/EMBEDDING.md §7). Migration `0006_requesters`: `contacts.external_id`, `tickets.metadata_json`, `tickets.requester_verified`, `messages.author_contact_id`.
+- trusted principal role `requester` (a contact, never an agent) with `visibility` `own` or `partition`;
+- `POST /api/tickets` (requesters, and staff on a customer's behalf) through the same Workflow as mail;
+- requester list, detail and replies that return only the public side, names only, verified requesters only;
+- ticket `metadata` and `source`; admins can move a ticket to another partition.
+
+Blocked on approval: the R2 bucket, the hand-run SQL on PlanetScale (`server/prisma/manual_2026_10_29_helpdesk_tables.sql` in portal_he_ui), the secrets, the deploys, and the Email Routing rule for support@realtyonrecord.com (routing is on for the zone since 2026-10-29; help-dev@ goes to realty-helpdesk-dev).
+
+The plan:
 - `cf-helpdesk init` in `portal_he_ui`. Deploy into the portal-tech account with `hd_*` tables in Realty's PlanetScale, applying the SQL by deploy request.
 - `realty-api` mounts `/api/v1/helpdesk/*`: the better-auth session plus company/tenant context becomes the principal, sent through the binding.
-- Realty screens use Realty's own shadcn components with TanStack Query over `@cf-helpdesk/client`. `@cf-helpdesk/react` hooks get extracted from this work only if they prove reusable.
+- Realty screens use Realty's own shadcn components with TanStack Query over `@rolandihms/helpdesk-client`. `@rolandihms/helpdesk-react` hooks get extracted from this work only if they prove reusable.
 - Live test: real mail to the Realty support address → ticket in the right company → reply from Realty's UI arrives threaded.
 
 ### H4: standalone applet (later)
-- A **TanStack Start** app with **better-auth**, built only on `@cf-helpdesk/client`.
+- A **TanStack Start** app with **better-auth**, built only on `@rolandihms/helpdesk-client`.
 - Framework-agnostic embedding: an **iframe route** with a short-lived signed handoff token from the host. A web component is deferred until a non-React host actually needs one, because it would be a second render stack to maintain.
 
 ## Full UI first?
 No. A styled UI now tests presentation, not integration, and Realty would throw it away. The reference app in H2 gives us end-to-end coverage of the real contract. The Prisma/MySQL CI test covers what no UI can: whether the prefixed tables survive the host's tooling.
 
-## Open questions (needed by H3, not H1)
-- The Realty support address and zone. Is the zone on the portal-tech account?
-- Partition key: one per Company, or also per Tenant? Should tenants see their own tickets (requester portal)?
-- Which Realty roles map to `admin` and `agent`?
-- npm scope (`@cf-helpdesk` or `@portal-tech`?) and the repo's license.
+## Decisions for H3 (2026-10-26)
+- **Account and zone:** `realtyonrecord.com`, on the portal-tech Cloudflare account (roland@portal-tech.co). The zone has no MX records yet, so Email Routing replaces nothing. The support address is still to be chosen.
+- **Partitions:** one per Company (`company:<id>`). Realty admins are unrestricted (`partition: null`) and see everything. Tenants get no partition and no requester view for now.
+- **Roles:** only Realty's internal admins (`user.role === "admin"`) reach the help desk, as `admin`. Other users get `403` from `realty-api` before anything is forwarded.
+- **npm scope:** `@rolandihms`: packages are `@rolandihms/helpdesk-{core,db,plugins,worker,client,cli}`, MIT licensed.
+
+## Decisions and rollout order (2026-10-29)
+After a review of how to test both deployments:
+- **Realty's database:** staging and production share the one main PlanetScale database, so one `realty-helpdesk` Worker serves both. Development uses a MySQL 8 server on a VPS.
+- **Realty's schema process:** direct SQL migrations, run by hand. No deploy requests, `prisma db push` or Prisma migrations. So the `hd_*` SQL is applied by hand, then recorded with `cf-helpdesk migrate --record-only`. The Prisma file only gives typed reads.
+- **Realty's account** is on Workers Paid, so Email Sending acks work.
+- **ihms.co** gets its own standalone desk at `support.ihms.co`, on the rolandihms Cloudflare account: one Worker serving the API and a static UI (same origin, as the CSRF check requires), D1, Cloudflare Access with Google login for its two agents, no GitHub plugin. Its MX is Google Workspace, so mail arrives on a subdomain (`support@help.ihms.co`).
+- **Order:** (0) redeploy the ihms.dev test Worker with 0.1.1 and verify the DMARC verdicts with real mail; (1) ihms.co; (2) Realty.
+- **Deferred:** whether senders whose domain has no DMARC record (`dmarc=none`) still get an ack.

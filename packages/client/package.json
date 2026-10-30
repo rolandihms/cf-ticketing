@@ -1,6 +1,6 @@
 {
-  "name": "@cf-helpdesk/client",
-  "version": "0.0.0",
+  "name": "@rolandihms/helpdesk-client",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -12,9 +12,6 @@
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc -p ."
-  },
-  "dependencies": {
-    "@cf-helpdesk/core": "*"
   },
   "devDependencies": {
     "typescript": "^5.9.0",

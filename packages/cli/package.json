@@ -1,6 +1,6 @@
 {
-  "name": "@cf-helpdesk/cli",
-  "version": "0.0.0",
+  "name": "@rolandihms/helpdesk-cli",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "jsonc-parser": "^3.3.1",
-    "@cf-helpdesk/db": "*"
+    "@rolandihms/helpdesk-db": "*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

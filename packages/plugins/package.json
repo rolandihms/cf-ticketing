@@ -1,6 +1,6 @@
 {
-  "name": "@cf-helpdesk/plugins",
-  "version": "0.0.0",
+  "name": "@rolandihms/helpdesk-plugins",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -10,7 +10,7 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
-    "@cf-helpdesk/core": "*"
+    "@rolandihms/helpdesk-core": "*"
   },
   "devDependencies": {
     "typescript": "^5.9.0",

@@ -1,4 +1,4 @@
-import { HelpdeskApiError, type Message, type TicketDetail, type TicketPatch, type TicketPriority, type TicketStatus } from "@cf-helpdesk/client";
+import { HelpdeskApiError, type Message, type TicketDetail, type TicketPatch, type TicketPriority, type TicketStatus } from "@rolandihms/helpdesk-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";

@@ -1,6 +1,6 @@
 import type { HelpdeskEnv } from "../env";
-import type { TicketServices } from "@cf-helpdesk/core";
-import { withRepo } from "@cf-helpdesk/db";
+import type { TicketServices } from "@rolandihms/helpdesk-core";
+import { withRepo } from "@rolandihms/helpdesk-db";
 
 /** TicketServices for plugins, backed by the configured database. Each call opens/closes a repo. */
 export function ticketServices(env: HelpdeskEnv, ticketId: string, actor: string): TicketServices {

@@ -1,4 +1,4 @@
-import type { HelpdeskEvent, HelpdeskPlugin, HookContext } from "@cf-helpdesk/core";
+import type { HelpdeskEvent, HelpdeskPlugin, HookContext } from "@rolandihms/helpdesk-core";
 import { hmacSha256Hex, safeEqual } from "./crypto";
 
 export interface WebhookEndpoint<Env> {
@@ -27,6 +27,11 @@ export interface WebhookPayload {
     priority: string;
     category: string | null;
     summary: string | null;
+    /** "email", "portal" or "app". */
+    source: string;
+    partition: string | null;
+    /** The host app's string pairs (e.g. a site id). */
+    metadata: Record<string, string>;
   };
   data: Record<string, unknown>;
 }
@@ -46,6 +51,10 @@ export function buildPayload(ev: HelpdeskEvent, ticket: HookContext["ticket"]): 
       priority: ticket.priority,
       category: ticket.category,
       summary: ticket.summary,
+      // `??`: a Workflow run from before 0.2.0 replays a cached ticket without these.
+      source: ticket.source ?? "email",
+      partition: ticket.partition ?? null,
+      metadata: ticket.metadata ?? {},
     },
     data: ev.data,
   };

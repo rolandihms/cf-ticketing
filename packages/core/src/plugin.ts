@@ -89,6 +89,14 @@ export interface HelpdeskConfig<Env = unknown> {
   plugins: HelpdeskPlugin<Env>[];
   /** Acknowledge new tickets by email. Default true. */
   ackNewTickets?: boolean;
+  /**
+   * Treat an inbound From address as proven only when the receiving MTA reports dmarc=pass. Unproven senders
+   * still open tickets, but get no ack and can't join a ticket by quoting its ref. Default true; turn it off
+   * only if your MTA doesn't add Authentication-Results.
+   */
+  requireDmarc?: boolean;
+  /** Auth-serv-ids whose Authentication-Results header is trusted. Default: Cloudflare Email Routing's ("mx.cloudflare.net"). */
+  trustedAuthServIds?: string[];
   /** Classification cascade (docs/AI-PIPELINE.md). Omit to disable classification. */
   classification?: ClassificationConfig<Env>;
 }

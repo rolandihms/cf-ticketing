@@ -1,6 +1,6 @@
-import type { GuardResult, InboundMessageMeta, Mailbox, Ticket } from "@cf-helpdesk/core";
-import { findRefsInSubject } from "@cf-helpdesk/core";
-import type { HelpdeskRepo, NewMessage } from "@cf-helpdesk/db";
+import type { GuardResult, InboundMessageMeta, Mailbox, Ticket } from "@rolandihms/helpdesk-core";
+import { findRefsInSubject } from "@rolandihms/helpdesk-core";
+import type { HelpdeskRepo, NewMessage } from "@rolandihms/helpdesk-db";
 
 export interface IngestResult {
   ticket: Ticket;
@@ -39,7 +39,7 @@ export async function ingestInbound(repo: HelpdeskRepo, mailbox: Mailbox, meta: 
     text_r2_key: meta.textKey,
     html_r2_key: meta.htmlKey,
     raw_r2_key: meta.rawKey,
-    auth_json: JSON.stringify({ guard: guard.reasons, envelopeFrom: meta.envelopeFrom, auth: "edge-accepted" }),
+    auth_json: JSON.stringify({ guard: guard.reasons, envelopeFrom: meta.envelopeFrom, dmarc: guard.dmarc ?? "unverified", senderVerified: guard.senderVerified === true }),
     author_agent_id: null,
   };
   const attachments = meta.attachments.map((a) => ({ r2Key: a.key, filename: a.filename, mimeType: a.mimeType, size: a.size }));
@@ -48,13 +48,14 @@ export async function ingestInbound(repo: HelpdeskRepo, mailbox: Mailbox, meta: 
   let target = await repo.findTicketByMessageIds(mailbox.id, meta.references);
   let threadedBy: IngestResult["threadedBy"] = "message-id";
 
-  // 2. Subject token, trusted only when the sender is the ticket's requester (refs are guessable).
+  // 2. Subject token, trusted only when the sender is the ticket's requester and DMARC proves the From address
+  //    (refs are guessable, and an unproven From could be anyone's).
   let relatedRef: string | null = null;
   if (!target) {
     for (const ref of findRefsInSubject(meta.subject, mailbox.refPrefix)) {
       const t = await repo.findTicketByRef(ref);
       if (!t || t.mailboxId !== mailbox.id) continue;
-      if (t.requesterId === contact.id) {
+      if (t.requesterId === contact.id && guard.senderVerified === true) {
         target = t;
         threadedBy = "subject-ref";
         break;
@@ -76,6 +77,8 @@ export async function ingestInbound(repo: HelpdeskRepo, mailbox: Mailbox, meta: 
     sourceIngestKey: meta.ingestKey,
     message,
     attachments,
+    // Requesters see a mail ticket in the host app only if DMARC proved who sent it.
+    requesterVerified: guard.senderVerified === true,
   });
   if (relatedRef) await repo.addEvent(ticket.id, "possible_related", "system:email", { ref: relatedRef });
   return { ticket, created: true, messageId, threadedBy: "new" };

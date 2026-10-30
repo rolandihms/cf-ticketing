@@ -2,8 +2,11 @@ import { introspectWorkflow, type WorkflowInstanceModifier } from "cloudflare:te
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src";
-import { D1Dialect, D1Repo } from "@cf-helpdesk/db";
+import { D1Dialect, D1Repo } from "@rolandihms/helpdesk-db";
 import { Kysely } from "kysely";
+import type { InboundMessageMeta, Ticket } from "@rolandihms/helpdesk-core";
+import { htmlToText } from "../../../packages/worker/src/email/html-text";
+import { NOTIFY_BODY_MAX, newTicketTemplate, ticketUrl } from "../../../packages/worker/src/email/templates";
 import { inboundMessage, rawEmail } from "./helpers";
 
 const SUPPORT = "support@acme.test";
@@ -105,6 +108,34 @@ describe("inbound email → ticket", () => {
     expect(stranger).toMatchObject({ ticketRef: "ACME-000002", created: true });
   });
 
+  it("never trusts a subject ref, or acks, when DMARC doesn't prove the From address", async () => {
+    await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Help" })));
+    // Forged From: the victim's address with a known ref, but Email Routing says dmarc=fail (or nothing at all).
+    for (const authResults of ["mx.cloudflare.net; dmarc=fail header.from=cust.example", null]) {
+      const [forged] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Re: [ACME-000001] Help", authResults })));
+      expect(forged).toMatchObject({ created: true, threadedBy: "new", acked: false });
+    }
+    // A pass the sender wrote into the message themselves sits below Email Routing's header and is ignored.
+    const spoofed = rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Re: [ACME-000001] Help", authResults: "mx.cloudflare.net; dmarc=none", headers: { "Authentication-Results": "mx.cloudflare.net; dmarc=pass" } });
+    const [s] = await runOne(() => deliver(spoofed));
+    expect(s).toMatchObject({ created: true, acked: false });
+
+    const first = await repo().findTicketByRef("ACME-000001");
+    const msgs = await repo().db.selectFrom("messages").select(["auth_json"]).where("ticket_id", "=", first!.id).where("direction", "=", "inbound").execute();
+    expect(msgs).toHaveLength(1);
+    expect(JSON.parse(msgs[0]!.auth_json!)).toMatchObject({ dmarc: "pass", senderVerified: true });
+  });
+
+  it("gives HTML-only mail a text body, preview and classifier input", async () => {
+    const html = "<html><head><style>p{color:red}</style></head><body><p>Hi team,</p><p>The tap&nbsp;is <b>leaking</b> &amp; dripping.<br>See <a href=\"https://x.example/p\">photo</a></p><script>alert(1)</script></body></html>";
+    const [r] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Tap", body: html, contentType: "text/html; charset=utf-8" })));
+    const t = await repo().findTicketByRef(r!.ticketRef);
+    const m = await repo().db.selectFrom("messages").select(["text_preview", "text_r2_key", "html_r2_key"]).where("ticket_id", "=", t!.id).where("direction", "=", "inbound").executeTakeFirstOrThrow();
+    expect(m.text_preview).toBe("Hi team, The tap is leaking & dripping. See photo (https://x.example/p)");
+    expect(m.html_r2_key).not.toBeNull();
+    expect(await (await env.MAIL.get(m.text_r2_key!))!.text()).toBe("Hi team,\n\nThe tap is leaking & dripping.\nSee photo (https://x.example/p)");
+  });
+
   it("ignores redelivery of the same message", async () => {
     const raw = rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Dup", messageId: "<dup-1@cust.example>" });
     const outputs = await runOne(async () => {
@@ -126,6 +157,92 @@ describe("inbound email → ticket", () => {
     expect(unknown.setReject).toHaveBeenCalledWith("Unknown recipient");
     const outputs = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "loop", headers: { "X-Helpdesk-Ticket": "ACME-000009" } })));
     expect(outputs).toHaveLength(0);
+  });
+});
+
+describe("new-ticket notifications", () => {
+  const notified = async (ref: string) => {
+    const t = await repo().findTicketByRef(ref);
+    const events = await repo().db.selectFrom("ticket_events").selectAll().where("ticket_id", "=", t!.id).where("type", "like", "notification.%").execute();
+    return events.map((e) => ({ type: e.type, data: JSON.parse(e.data_json ?? "{}") }));
+  };
+  beforeEach(async () => {
+    const mb = (await repo().getMailboxByAddress(SUPPORT))!;
+    await repo().updateMailbox(mb.id, { notifyNewTicket: ["ops@acme.test", "lead@acme.test"] });
+  });
+
+  it("emails each address once for a new ticket, including unverified senders, but not for replies", async () => {
+    const [a] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Printer on fire", messageId: "<first@cust.example>" })));
+    expect(await notified(a!.ticketRef)).toEqual([{ type: "notification.sent", data: { to: ["ops@acme.test", "lead@acme.test"] } }]);
+
+    const [reply] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Re: Printer on fire", headers: { "In-Reply-To": "<first@cust.example>" } })));
+    expect(reply).toMatchObject({ ticketRef: a!.ticketRef, created: false });
+    expect(await notified(a!.ticketRef)).toHaveLength(1);
+
+    const [forged] = await runOne(() => deliver(rawEmail({ from: "bob@cust.example", to: SUPPORT, subject: "Unverified", authResults: null }), "bob@cust.example"));
+    expect(await notified(forged!.ticketRef)).toHaveLength(1);
+  });
+
+  it("never notifies for automated mail", async () => {
+    const [r] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Out of office", headers: { "Auto-Submitted": "auto-replied" } })));
+    expect(await notified(r!.ticketRef)).toEqual([]);
+  });
+
+  it("builds a staff email with the facts, a link and the message, escaped", () => {
+    const mailbox = { id: "m", address: SUPPORT, name: "Acme Support", refPrefix: "ACME", fromName: null, partition: null, notifyNewTicket: [] };
+    const ticket = { ref: "ACME-000007", subject: "Help <b>now</b>", priority: "high" } as Ticket;
+    const inbound = { from: { address: CUSTOMER, name: "Jane" }, attachments: [{}] } as unknown as InboundMessageMeta;
+    const classification = { category: "billing", confidence: 0.9, codeRelated: false, summary: "Double charge", acceptedBy: "llm", attempts: [] };
+    const n = newTicketTemplate({ mailbox, ticket, inbound, body: "I was charged twice.", senderVerified: false, classification, ticketUrl: ticketUrl("https://desk.test/t/{ref}", ticket.ref) });
+    expect(n.subject).toBe("[ACME-000007] New ticket: Help <b>now</b>");
+    expect(n.text).toContain("From: Jane <jane@cust.example> (sender not verified");
+    expect(n.text).toContain("Category: billing\nPriority: high\nSummary: Double charge\nAttachments: 1");
+    expect(n.text).toContain("Open: https://desk.test/t/ACME-000007");
+    expect(n.text).toContain("I was charged twice.");
+    expect(n.html).toContain("Help &#60;b&#62;now&#60;/b&#62;");
+    expect(ticketUrl("javascript:alert(1)//{ref}", "X")).toBeUndefined();
+    expect(newTicketTemplate({ mailbox, ticket, inbound, body: "x".repeat(NOTIFY_BODY_MAX + 1), senderVerified: true }).text).toContain("[… truncated");
+  });
+});
+
+describe("portal/app tickets (requesters)", () => {
+  const ann = { externalId: "cust_1", email: CUSTOMER, name: "Jane", role: "requester", partition: "company:1" };
+  const post = async (path: string, body: unknown) =>
+    worker.fetch(
+      new Request(`https://hd.test${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-helpdesk-service-key": "svc-key", "x-helpdesk-principal": JSON.stringify(ann) },
+        body: JSON.stringify(body),
+      }),
+      { ...env, TRUSTED_PRINCIPAL: "on", HELPDESK_SERVICE_KEY: "svc-key" },
+      {} as ExecutionContext,
+    );
+
+  it("runs the same Workflow as mail: classification, staff notification, ack only when asked", async () => {
+    const mb = (await repo().getMailboxByAddress(SUPPORT))!;
+    await repo().updateMailbox(mb.id, { notifyNewTicket: ["ops@acme.test"] });
+    const [out] = await runOne(() => post("/api/tickets", { mailbox: SUPPORT, subject: "Prepaid not loading", text: "I bought units but they never arrived.", ack: true }));
+    expect(out).toMatchObject({ ticketRef: "ACME-000001", acked: true, category: "question" });
+
+    const t = (await repo().findTicketByRef("ACME-000001"))!;
+    expect(t).toMatchObject({ category: "question", source: "portal", partition: "company:1", requesterVerified: true });
+    const msgs = await repo().db.selectFrom("messages").selectAll().where("ticket_id", "=", t.id).orderBy("created_at").execute();
+    expect(msgs.map((m) => `${m.direction}:${m.kind}`)).toEqual(["inbound:customer", "outbound:ack"]);
+    const events = await repo().db.selectFrom("ticket_events").select("type").where("ticket_id", "=", t.id).execute();
+    expect(events.map((e) => e.type)).toEqual(expect.arrayContaining(["ticket.created", "ticket.classified", "notification.sent"]));
+
+    // A reply goes through the Workflow too (plugins see message.received) but notifies nobody.
+    const [reply] = await runOne(() => post("/api/tickets/ACME-000001/messages", { text: "Any news?" }));
+    expect(reply).toMatchObject({ ticketRef: "ACME-000001", acked: false });
+    const sent = await repo().db.selectFrom("ticket_events").select("type").where("ticket_id", "=", t.id).where("type", "=", "notification.sent").execute();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("marks mail tickets verified only when DMARC proved the sender", async () => {
+    const [ok] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Proven" })));
+    const [bad] = await runOne(() => deliver(rawEmail({ from: "bob@cust.example", to: SUPPORT, subject: "Unproven", authResults: null }), "bob@cust.example"));
+    expect((await repo().findTicketByRef(ok!.ticketRef))!.requesterVerified).toBe(true);
+    expect((await repo().findTicketByRef(bad!.ticketRef))!.requesterVerified).toBe(false);
   });
 });
 
@@ -223,4 +340,16 @@ describe("api", () => {
     expect(body.ticket.ref).toBe("ACME-000001");
     expect(body.messages).toHaveLength(2);
   });
+});
+
+describe("htmlToText", () => {
+  it.each([
+    ["<p>a</p><p>b</p>", "a\n\nb"],
+    ["line<br/>break", "line\nbreak"],
+    ["&lt;b&gt; &#65;&#x42; &bogus; &#xD800;", "<b> AB &bogus;"],
+    ['<a href="https://a.example">https://a.example</a>', "https://a.example"],
+    ['<a href="javascript:alert(1)">x</a>', "x"],
+    ["<!-- hidden --><title>T</title>shown", "shown"],
+    ["   ", ""],
+  ])("%s", (html, text) => expect(htmlToText(html)).toBe(text));
 });

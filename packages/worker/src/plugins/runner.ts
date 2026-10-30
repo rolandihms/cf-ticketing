@@ -9,7 +9,7 @@ import {
   type InboundMessageMeta,
   type PluginStep,
   type TicketServices,
-} from "@cf-helpdesk/core";
+} from "@rolandihms/helpdesk-core";
 import type { WorkflowStep } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
 

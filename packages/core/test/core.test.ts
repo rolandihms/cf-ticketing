@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   computeIngestKey,
+  dmarcVerdict,
   evaluateInbound,
+  firstHeader,
   findRefsInSubject,
   formatRef,
   normalizeMessageId,
@@ -51,10 +53,37 @@ describe("ingest key", () => {
 
 describe("guards", () => {
   const own = ["support@acme.com"];
+  const PASS = "mx.cloudflare.net; spf=pass smtp.mailfrom=cust.com; dkim=pass header.d=cust.com; dmarc=pass header.from=cust.com";
   it("accepts a normal human email", () => {
-    expect(evaluateInbound({ envelopeFrom: "jane@cust.com", headers: h({}), ownAddresses: own })).toEqual({
-      accept: true, allowAutoReply: true, reasons: [],
+    expect(evaluateInbound({ envelopeFrom: "jane@cust.com", headers: h({}), ownAddresses: own, authenticationResults: PASS })).toEqual({
+      accept: true, allowAutoReply: true, senderVerified: true, dmarc: "pass", reasons: [],
     });
+  });
+  it.each([
+    [null, "unverified"],
+    ["mx.cloudflare.net; dmarc=fail header.from=cust.com", "fail"],
+    ["mx.cloudflare.net; dmarc=none header.from=cust.com", "none"],
+    ["mx.cloudflare.net; spf=pass smtp.mailfrom=cust.com", "none"],
+    ["mx.cloudflare.net; dmarc=temperror", "fail"],
+    // Written by someone else (a forged header the sender put in the message): not trusted.
+    ["evil.example; dmarc=pass header.from=cust.com", "unverified"],
+  ])("stores mail from an unproven sender but never acks it or trusts its From (%s)", (auth, verdict) => {
+    const r = evaluateInbound({ envelopeFrom: "jane@cust.com", headers: h({}), ownAddresses: own, authenticationResults: auth });
+    expect(r).toMatchObject({ accept: true, allowAutoReply: false, senderVerified: false, dmarc: verdict });
+    expect(r.reasons).toEqual([`dmarc-${verdict}`]);
+  });
+  it("accepts an authserv-id with a version, other trusted ids, and requireDmarc: false", () => {
+    expect(dmarcVerdict("MX.Cloudflare.net 1; dmarc=PASS header.from=a.com")).toBe("pass");
+    expect(dmarcVerdict("mx.example.org; dmarc=pass", ["mx.example.org"])).toBe("pass");
+    expect(evaluateInbound({ envelopeFrom: "jane@cust.com", headers: h({}), ownAddresses: own, requireDmarc: false })).toMatchObject({
+      allowAutoReply: true, senderVerified: true, dmarc: "unverified",
+    });
+  });
+  it("reads only the topmost Authentication-Results, unfolded", () => {
+    const raw = (s: string) => new TextEncoder().encode(s);
+    const msg = "Authentication-Results: mx.cloudflare.net;\r\n dmarc=fail header.from=a.com\r\nAuthentication-Results: mx.cloudflare.net; dmarc=pass\r\nSubject: x\r\n\r\nAuthentication-Results: body";
+    expect(firstHeader(raw(msg), "authentication-results")).toBe("mx.cloudflare.net; dmarc=fail header.from=a.com");
+    expect(firstHeader(raw("Subject: x\n\nAuthentication-Results: mx.cloudflare.net; dmarc=pass"), "Authentication-Results")).toBeNull();
   });
   it("drops our own mail", () => {
     expect(evaluateInbound({ envelopeFrom: "SUPPORT@acme.com", headers: h({}), ownAddresses: own }).accept).toBe(false);
@@ -70,7 +99,7 @@ describe("guards", () => {
     ["a@x.com", { "x-auto-response-suppress": "All" }],
     ["a@x.com", { "content-type": "multipart/report; report-type=delivery-status" }],
   ])("stores but never auto-replies to automated mail (%s)", (from, hdrs) => {
-    const r = evaluateInbound({ envelopeFrom: from, headers: h(hdrs as Record<string, string>), ownAddresses: own });
+    const r = evaluateInbound({ envelopeFrom: from, headers: h(hdrs as Record<string, string>), ownAddresses: own, authenticationResults: PASS });
     expect(r.accept).toBe(true);
     expect(r.allowAutoReply).toBe(false);
   });

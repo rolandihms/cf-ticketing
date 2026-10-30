@@ -1,7 +1,7 @@
 // Behaviour every HelpdeskRepo implementation must satisfy. Run per dialect by *.test.ts files.
-import type { Mailbox } from "@cf-helpdesk/core";
+import type { Mailbox } from "@rolandihms/helpdesk-core";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { HelpdeskRepo, NewMessage, SqlRepo } from "../src/repo";
+import { type HelpdeskRepo, type NewMessage, PARTITION_GRANT_TTL, type SqlRepo } from "../src/repo";
 
 export function inbound(ingestKey: string, overrides: Partial<NewMessage> = {}): NewMessage {
   return {
@@ -224,6 +224,26 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
       expect(await repo.getAgentPartitions(staff.id)).toEqual(["*"]);
     });
 
+    it("withdraws global access when the host scopes an agent, and lets unconfirmed grants lapse", async () => {
+      const staff = await repo.upsertAgentByExternalId({ externalId: "u3", email: "staff@host.test", name: "Staff", role: "admin", partition: null });
+      const ids = async (p: string) => (await repo.listAgents({ partition: p })).map((a) => a.id);
+      expect(await ids("company:9")).toContain(staff.id);
+      // The host now sends them for one company only: "*" goes, so they're no longer in every tenant.
+      await repo.upsertAgentByExternalId({ externalId: "u3", email: "staff@host.test", name: "Staff", role: "agent", partition: "company:1" });
+      expect(await repo.getAgentPartitions(staff.id)).toEqual(["company:1"]);
+      expect(await ids("company:9")).not.toContain(staff.id);
+      expect(await ids("company:1")).toContain(staff.id);
+
+      // A grant the host hasn't confirmed within the TTL lapses…
+      const old = Date.now() - PARTITION_GRANT_TTL - 1000;
+      await (repo as unknown as SqlRepo).db.updateTable("agent_partitions").set({ created_at: old }).where("agent_id", "=", staff.id).execute();
+      expect(await repo.getAgentPartitions(staff.id)).toEqual([]);
+      expect(await ids("company:1")).not.toContain(staff.id);
+      // …and comes back (refreshed) the next time the host sends them there.
+      await repo.upsertAgentByExternalId({ externalId: "u3", email: "staff@host.test", name: "Staff", role: "agent", partition: "company:1" });
+      expect(await repo.getAgentPartitions(staff.id)).toEqual(["company:1"]);
+    });
+
     it("manages agents (idempotent create by email, update, deactivate)", async () => {
       const a = await repo.createAgent({ email: "Ann@Acme.test", name: "Ann", role: "admin" });
       const again = await repo.createAgent({ email: "ann@acme.test", name: "Other", role: "agent" });
@@ -336,6 +356,58 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
       const page1 = await repo.listTickets({ limit: 2 });
       const page2 = await repo.listTickets({ limit: 2, cursor: page1[1]!.id });
       expect([...page1, ...page2].map((t) => t.number)).toEqual([3, 2, 1]);
+    });
+
+    it("links requesters to contacts by external id, following email changes and merging mail-only contacts", async () => {
+      const mailOnly = await repo.upsertContact("jane@cust.example", "J");
+      const jane = await repo.upsertContactByExternalId({ externalId: "u1", email: "Jane@Cust.example", name: "Jane" });
+      expect(jane).toEqual({ id: mailOnly.id, email: "jane@cust.example", name: "Jane", externalId: "u1" });
+      expect((await repo.upsertContactByExternalId({ externalId: "u1", email: "jane@cust.example", name: "Jane" })).id).toBe(jane.id);
+
+      // A new address that already wrote in: its contact and tickets merge into the user's.
+      const other = await repo.upsertContact("jane.new@cust.example", null);
+      const { ticket } = await repo.createTicketWithFirstMessage({ mailbox, requesterId: other.id, subject: "Old mail", sourceIngestKey: key(1), message: inbound(key(1)), attachments: [] });
+      const moved = await repo.upsertContactByExternalId({ externalId: "u1", email: "jane.new@cust.example", name: "Jane N" });
+      expect(moved).toEqual({ id: jane.id, email: "jane.new@cust.example", name: "Jane N", externalId: "u1" });
+      expect((await repo.getTicket(ticket.id))!.requesterId).toBe(jane.id);
+      expect(await repo.getContact(other.id)).toBeNull();
+
+      await expect(repo.upsertContactByExternalId({ externalId: "u2", email: "jane.new@cust.example", name: "Imposter" })).rejects.toThrow(/another external user/);
+      const bob = await repo.upsertContactByExternalId({ externalId: "u2", email: "bob@cust.example", name: "" });
+      expect((await repo.getContactNames([jane.id, bob.id, jane.id])).get(bob.id)).toBe("bob");
+    });
+
+    it("creates portal tickets with source, partition, metadata and a source key; requester filter needs verification", async () => {
+      const jane = await repo.upsertContactByExternalId({ externalId: "u1", email: "jane@cust.example", name: "Jane" });
+      const bob = await repo.upsertContactByExternalId({ externalId: "u2", email: "bob@cust.example", name: "Bob" });
+      const mk = (requesterId: string, n: number, extra: object) =>
+        repo.createTicketWithFirstMessage({ mailbox, requesterId, subject: `T${n}`, sourceIngestKey: key(n), message: inbound(key(n)), attachments: [], ...extra });
+      const { ticket: a } = await mk(jane.id, 1, { source: "portal", partition: "company:1", metadata: { "site": "42" }, requesterVerified: true, actor: `contact:${jane.id}` });
+      await mk(bob.id, 2, { source: "app", partition: "company:1", requesterVerified: true });
+      await mk(jane.id, 3, { requesterVerified: false }); // forged mail "from" Jane
+      await mk(jane.id, 4, {}); // before 0006: unknown
+      expect(a).toMatchObject({ source: "portal", partition: "company:1", metadata: { site: "42" } });
+      expect((await repo.findTicketBySourceKey(key(1)))!.id).toBe(a.id);
+      expect(await repo.findTicketBySourceKey(key(9))).toBeNull();
+
+      const subjects = async (contactId: string, partition: string | null) => (await repo.listTickets({ limit: 10, requester: { contactId, partition } })).map((t) => t.subject);
+      expect(await subjects(jane.id, null)).toEqual(["T1"]);
+      expect(await subjects(jane.id, "company:1")).toEqual(["T2", "T1"]);
+      expect(await subjects(bob.id, "company:2")).toEqual(["T2"]);
+    });
+
+    it("updates metadata and partition with events, compare-and-set", async () => {
+      const c = await repo.upsertContact("jane@cust.example", null);
+      const { ticket } = await repo.createTicketWithFirstMessage({ mailbox, requesterId: c.id, subject: "T", sourceIngestKey: key(1), message: inbound(key(1)), attachments: [] });
+      const t1 = await repo.updateTicket(ticket, { metadata: { unit: "7" }, partition: "company:1" }, "api");
+      expect(t1).toMatchObject({ metadata: { unit: "7" }, partition: "company:1" });
+      await expect(repo.updateTicket(ticket, { metadata: { unit: "8" } }, "api")).rejects.toThrow(/changed by someone else/);
+      const t2 = await repo.updateTicket(t1, { metadata: {}, partition: null }, "api");
+      expect(t2).toMatchObject({ metadata: {}, partition: null });
+      const detail = (await repo.getTicketDetail(ticket.ref))!;
+      expect(detail.events.map((e) => e.type).filter((x) => x !== "ticket.created")).toEqual([
+        "ticket.metadata_changed", "ticket.partition_changed", "ticket.metadata_changed", "ticket.partition_changed",
+      ]);
     });
   });
 }
