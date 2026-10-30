@@ -101,6 +101,10 @@ Published: 0.1.0 on 2026-10-27. A security review of the published code found no
 - host-provisioned agents' partition grants lapse after 30 days unconfirmed, and a partitioned request withdraws global access;
 - HTML-only mail gets a text body.
 
+0.1.2 (prepared 2026-10-30, no schema change):
+- each mailbox can email up to 10 staff addresses when it opens a new ticket (`notifyNewTicket`, `PATCH /api/mailboxes/:id`, optional `TICKET_URL` link; docs/INTEGRATIONS.md §3);
+- a lower-confidence classifier's priority is kept when the accepted result has none (e.g. a rules hint marking an outage urgent).
+
 Blocked on approval: the R2 bucket, the hand-run SQL on PlanetScale (`server/prisma/manual_2026_10_29_helpdesk_tables.sql` in portal_he_ui), the secrets, the deploys, and the Email Routing rule for support@realtyonrecord.com (routing is on for the zone since 2026-10-29; help-dev@ goes to realty-helpdesk-dev).
 
 The plan:
