@@ -56,6 +56,9 @@
     // Auto-create a mailbox on first email to an unknown address (dev convenience). Otherwise reject.
     "AUTO_CREATE_MAILBOXES": "false",
     "DEFAULT_REF_PREFIX": "TKT",
+    // Link in new-ticket staff notifications ({ref} = the ticket ref), e.g. "https://desk.example.com/tickets/{ref}".
+    // Recipients are set per mailbox (Settings, or PATCH /api/mailboxes/:id). Empty = no link.
+    "TICKET_URL": "",
     // Workers AI model for classification (must support JSON mode) and optional AI Gateway id.
     "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "AI_GATEWAY_ID": "",

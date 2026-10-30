@@ -187,6 +187,29 @@ describe("agents and roles", () => {
     expect((await call("PATCH", `/api/agents/${boss.id}`, { jwt: bossJwt, body: { role: "agent" } })).status).toBe(409);
     expect((await admin("POST", "/api/agents", { email: "bad", name: "X" })).status).toBe(400);
   });
+
+  it("sets a mailbox's new-ticket notification list, refusing help desk addresses", async () => {
+    const mb = (await repo().getMailboxByAddress(SUPPORT))!;
+    expect(mb.notifyNewTicket).toEqual([]);
+    const res = await admin("PATCH", `/api/mailboxes/${mb.id}`, { notifyNewTicket: [" Ops@Acme.test", "ops@acme.test", "lead@acme.test"], fromName: "Acme Help" });
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ address: SUPPORT, fromName: "Acme Help", notifyNewTicket: ["ops@acme.test", "lead@acme.test"] });
+    expect((await admin("GET", "/api/mailboxes")).json.mailboxes[0].notifyNewTicket).toEqual(["ops@acme.test", "lead@acme.test"]);
+
+    for (const notifyNewTicket of ["ops@acme.test", ["not an address"], ["a@b.test\r\nBcc: x@evil.test"], [SUPPORT], Array.from({ length: 11 }, (_, i) => `p${i}@acme.test`)]) {
+      expect((await admin("PATCH", `/api/mailboxes/${mb.id}`, { notifyNewTicket })).status).toBe(400);
+    }
+    // Clearing, and a name change that leaves the list alone.
+    expect((await admin("PATCH", `/api/mailboxes/${mb.id}`, { name: "Acme" })).json).toMatchObject({ name: "Acme", notifyNewTicket: ["ops@acme.test", "lead@acme.test"] });
+    expect((await admin("PATCH", `/api/mailboxes/${mb.id}`, { notifyNewTicket: [] })).json.notifyNewTicket).toEqual([]);
+
+    await admin("POST", "/api/agents", { email: "ann@acme.test", name: "Ann" });
+    const annJwt = await accessJwt({ email: "ann@acme.test" });
+    expect((await call("PATCH", `/api/mailboxes/${mb.id}`, { jwt: annJwt, body: { notifyNewTicket: [] } })).status).toBe(403);
+    // A company admin can't touch the operator's (unpartitioned) mailbox.
+    expect((await host("PATCH", `/api/mailboxes/${mb.id}`, { ...kim, role: "admin" }, { body: { notifyNewTicket: [] } })).status).toBe(404);
+    expect((await admin("PATCH", "/api/mailboxes/nope", { name: "X" })).status).toBe(404);
+  });
 });
 
 describe("ticket workflow", () => {

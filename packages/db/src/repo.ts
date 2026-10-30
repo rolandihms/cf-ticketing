@@ -64,6 +64,12 @@ export interface TicketPatch {
   assigneeId?: string | null;
 }
 
+export interface MailboxPatch {
+  name?: string;
+  fromName?: string | null;
+  notifyNewTicket?: string[];
+}
+
 export interface SaveClassificationInput {
   ticket: Ticket;
   /** The inbound message that was classified. */
@@ -76,6 +82,9 @@ export interface HelpdeskRepo {
   readonly dialect: SqlDialect;
   getMailboxByAddress(address: string): Promise<Mailbox | null>;
   createMailbox(input: { address: string; name: string; refPrefix: string; fromName?: string | null; partition?: string | null }): Promise<Mailbox>;
+  getMailbox(id: string): Promise<Mailbox | null>;
+  /** Change a mailbox's names or settings; the address, prefix and partition are fixed. Null if not found. */
+  updateMailbox(id: string, patch: MailboxPatch): Promise<Mailbox | null>;
   listMailboxAddresses(): Promise<string[]>;
   upsertContact(email: string, name: string | null): Promise<Contact>;
   getContact(id: string): Promise<Contact | null>;
@@ -199,8 +208,32 @@ function toAgent(r: AgentsTable): Agent {
   };
 }
 
+/** Per-mailbox settings, stored as JSON in mailboxes.settings_json. */
+interface MailboxSettings {
+  notifyNewTicket?: string[];
+}
+
+function mailboxSettings(json: string | null): MailboxSettings {
+  if (!json) return {};
+  try {
+    const v = JSON.parse(json) as unknown;
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as MailboxSettings) : {};
+  } catch {
+    return {};
+  }
+}
+
 function toMailbox(r: MailboxesTable): Mailbox {
-  return { id: r.id, address: r.address, name: r.name, refPrefix: r.ref_prefix, fromName: r.from_name, partition: r.partition_key ?? null };
+  const s = mailboxSettings(r.settings_json);
+  return {
+    id: r.id,
+    address: r.address,
+    name: r.name,
+    refPrefix: r.ref_prefix,
+    fromName: r.from_name,
+    partition: r.partition_key ?? null,
+    notifyNewTicket: Array.isArray(s.notifyNewTicket) ? s.notifyNewTicket.filter((a): a is string => typeof a === "string") : [],
+  };
 }
 
 const milli = (x: number) => Math.round(Math.min(1, Math.max(0, x)) * 1000);
@@ -260,6 +293,25 @@ export class SqlRepo implements HelpdeskRepo {
       "address",
     ).execute();
     return (await this.getMailboxByAddress(address))!;
+  }
+
+  async getMailbox(id: string): Promise<Mailbox | null> {
+    const r = await this.db.selectFrom("mailboxes").selectAll().where("id", "=", id).executeTakeFirst();
+    return r ? toMailbox(r) : null;
+  }
+
+  async updateMailbox(id: string, patch: MailboxPatch): Promise<Mailbox | null> {
+    const row = await this.db.selectFrom("mailboxes").selectAll().where("id", "=", id).executeTakeFirst();
+    if (!row) return null;
+    const set: Partial<MailboxesTable> = {};
+    if (patch.name !== undefined) set.name = patch.name;
+    if (patch.fromName !== undefined) set.from_name = patch.fromName;
+    if (patch.notifyNewTicket !== undefined) {
+      // Keep settings this version doesn't know about.
+      set.settings_json = JSON.stringify({ ...mailboxSettings(row.settings_json), notifyNewTicket: patch.notifyNewTicket });
+    }
+    if (Object.keys(set).length) await this.db.updateTable("mailboxes").set(set).where("id", "=", id).execute();
+    return this.getMailbox(id);
   }
 
   async listMailboxAddresses(): Promise<string[]> {

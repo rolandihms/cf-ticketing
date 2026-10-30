@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src";
 import { D1Dialect, D1Repo } from "@rolandihms/helpdesk-db";
 import { Kysely } from "kysely";
+import type { InboundMessageMeta, Ticket } from "@rolandihms/helpdesk-core";
 import { htmlToText } from "../../../packages/worker/src/email/html-text";
+import { NOTIFY_BODY_MAX, newTicketTemplate, ticketUrl } from "../../../packages/worker/src/email/templates";
 import { inboundMessage, rawEmail } from "./helpers";
 
 const SUPPORT = "support@acme.test";
@@ -155,6 +157,51 @@ describe("inbound email → ticket", () => {
     expect(unknown.setReject).toHaveBeenCalledWith("Unknown recipient");
     const outputs = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "loop", headers: { "X-Helpdesk-Ticket": "ACME-000009" } })));
     expect(outputs).toHaveLength(0);
+  });
+});
+
+describe("new-ticket notifications", () => {
+  const notified = async (ref: string) => {
+    const t = await repo().findTicketByRef(ref);
+    const events = await repo().db.selectFrom("ticket_events").selectAll().where("ticket_id", "=", t!.id).where("type", "like", "notification.%").execute();
+    return events.map((e) => ({ type: e.type, data: JSON.parse(e.data_json ?? "{}") }));
+  };
+  beforeEach(async () => {
+    const mb = (await repo().getMailboxByAddress(SUPPORT))!;
+    await repo().updateMailbox(mb.id, { notifyNewTicket: ["ops@acme.test", "lead@acme.test"] });
+  });
+
+  it("emails each address once for a new ticket, including unverified senders, but not for replies", async () => {
+    const [a] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Printer on fire", messageId: "<first@cust.example>" })));
+    expect(await notified(a!.ticketRef)).toEqual([{ type: "notification.sent", data: { to: ["ops@acme.test", "lead@acme.test"] } }]);
+
+    const [reply] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Re: Printer on fire", headers: { "In-Reply-To": "<first@cust.example>" } })));
+    expect(reply).toMatchObject({ ticketRef: a!.ticketRef, created: false });
+    expect(await notified(a!.ticketRef)).toHaveLength(1);
+
+    const [forged] = await runOne(() => deliver(rawEmail({ from: "bob@cust.example", to: SUPPORT, subject: "Unverified", authResults: null }), "bob@cust.example"));
+    expect(await notified(forged!.ticketRef)).toHaveLength(1);
+  });
+
+  it("never notifies for automated mail", async () => {
+    const [r] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Out of office", headers: { "Auto-Submitted": "auto-replied" } })));
+    expect(await notified(r!.ticketRef)).toEqual([]);
+  });
+
+  it("builds a staff email with the facts, a link and the message, escaped", () => {
+    const mailbox = { id: "m", address: SUPPORT, name: "Acme Support", refPrefix: "ACME", fromName: null, partition: null, notifyNewTicket: [] };
+    const ticket = { ref: "ACME-000007", subject: "Help <b>now</b>", priority: "high" } as Ticket;
+    const inbound = { from: { address: CUSTOMER, name: "Jane" }, attachments: [{}] } as unknown as InboundMessageMeta;
+    const classification = { category: "billing", confidence: 0.9, codeRelated: false, summary: "Double charge", acceptedBy: "llm", attempts: [] };
+    const n = newTicketTemplate({ mailbox, ticket, inbound, body: "I was charged twice.", senderVerified: false, classification, ticketUrl: ticketUrl("https://desk.test/t/{ref}", ticket.ref) });
+    expect(n.subject).toBe("[ACME-000007] New ticket: Help <b>now</b>");
+    expect(n.text).toContain("From: Jane <jane@cust.example> (sender not verified");
+    expect(n.text).toContain("Category: billing\nPriority: high\nSummary: Double charge\nAttachments: 1");
+    expect(n.text).toContain("Open: https://desk.test/t/ACME-000007");
+    expect(n.text).toContain("I was charged twice.");
+    expect(n.html).toContain("Help &#60;b&#62;now&#60;/b&#62;");
+    expect(ticketUrl("javascript:alert(1)//{ref}", "X")).toBeUndefined();
+    expect(newTicketTemplate({ mailbox, ticket, inbound, body: "x".repeat(NOTIFY_BODY_MAX + 1), senderVerified: true }).text).toContain("[… truncated");
   });
 });
 

@@ -1,4 +1,4 @@
-import type { AgentRole } from "@rolandihms/helpdesk-client";
+import type { AgentRole, Mailbox } from "@rolandihms/helpdesk-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { agentsQuery, errorText, helpdesk, mailboxesQuery, meQuery } from "../api";
@@ -117,7 +117,8 @@ function Mailboxes() {
     <section className="card">
       <h2>Mailboxes</h2>
       <p className="muted">
-        Addresses that receive mail. Each one also needs an Email Routing rule that sends it to this Worker.
+        Addresses that receive mail. Each one also needs an Email Routing rule that sends it to this Worker. "Notify" lists
+        staff addresses that get a copy of every new ticket.
       </p>
       <table className="grid">
         <thead>
@@ -126,6 +127,7 @@ function Mailboxes() {
             <th>Name</th>
             <th>Sender name</th>
             <th>Ref prefix</th>
+            <th>Notify</th>
           </tr>
         </thead>
         <tbody>
@@ -137,11 +139,14 @@ function Mailboxes() {
               <td>
                 <code>{m.refPrefix}</code>
               </td>
+              <td>
+                <NotifyList mailbox={m} />
+              </td>
             </tr>
           ))}
           {mailboxes.data?.length === 0 ? (
             <tr>
-              <td colSpan={4} className="muted">
+              <td colSpan={5} className="muted">
                 No mailboxes yet. Add one to start receiving mail.
               </td>
             </tr>
@@ -184,5 +189,53 @@ function Mailboxes() {
       </form>
       {create.error ? <p className="alert">{errorText(create.error)}</p> : null}
     </section>
+  );
+}
+
+/** The new-ticket notification addresses of one mailbox, edited in place as a comma-separated list. */
+function NotifyList({ mailbox }: { mailbox: Mailbox }) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const save = useMutation({
+    mutationFn: (notifyNewTicket: string[]) => helpdesk.mailboxes.update(mailbox.id, { notifyNewTicket }),
+    onSuccess: () => {
+      setEditing(false);
+      return qc.invalidateQueries({ queryKey: mailboxesQuery.queryKey });
+    },
+  });
+
+  if (!editing) {
+    return (
+      <span className="notify-list">
+        {mailbox.notifyNewTicket.length ? mailbox.notifyNewTicket.join(", ") : <span className="muted">—</span>}{" "}
+        <button type="button" className="btn ghost small" onClick={() => setEditing(true)} aria-label={`Edit notifications for ${mailbox.address}`}>
+          Edit
+        </button>
+      </span>
+    );
+  }
+  return (
+    <form
+      className="row-form"
+      onSubmit={(e) => {
+        const { get } = formValues(e);
+        save.mutate(get("notify").split(/[\s,;]+/).filter(Boolean));
+      }}
+    >
+      <input
+        name="notify"
+        defaultValue={mailbox.notifyNewTicket.join(", ")}
+        placeholder="ops@example.com, lead@example.com"
+        aria-label={`Notification addresses for ${mailbox.address}`}
+        autoFocus
+      />
+      <button type="submit" className="btn primary small" disabled={save.isPending}>
+        Save
+      </button>
+      <button type="button" className="btn ghost small" onClick={() => setEditing(false)}>
+        Cancel
+      </button>
+      {save.error ? <p className="alert">{errorText(save.error)}</p> : null}
+    </form>
   );
 }

@@ -1,4 +1,4 @@
-# Integrations: GitHub issues and webhooks
+# Integrations: GitHub issues, webhooks and staff email
 
 Both integrations are **optional plugins** (`packages/plugins`), enabled in `apps/worker/helpdesk.config.ts`. They stay off until you set their variables.
 
@@ -155,7 +155,22 @@ Without the package:
 | Another **Cloudflare Worker** in your account | A webhook to its URL works today. A Queue or service-binding transport plugin is a small addition if you want delivery without the public internet. |
 | Slack/Teams | Point a webhook at a small adapter Worker, or write a 20-line plugin with `onEvent`. |
 
-## 3. Writing your own integration
+## 3. Emailing staff about new tickets
+
+Each mailbox has a **notify list**: up to 10 staff addresses that get an email whenever that mailbox opens a new ticket. This is built in, not a plugin: set it in the desk's Settings (Mailboxes → Notify → Edit), or with the API:
+
+```
+PATCH /api/mailboxes/:id   {"notifyNewTicket": ["ops@example.com", "lead@example.com"]}
+```
+
+- **What is sent:** one email per address, from the mailbox address, with subject `[REF] New ticket: <subject>`. It lists the sender (flagged when DMARC didn't verify it), category, priority, summary and attachment count, then the customer's plain-text message (up to 20,000 characters). Attachments stay in the help desk.
+- **Link:** set the `TICKET_URL` var to your agent UI's ticket page, with `{ref}` for the ticket ref (e.g. `https://support.example.com/tickets/{ref}`). Empty: no link.
+- **When:** after classification, only for new tickets, never for customer replies or automated mail (auto-replies, bounces, mailing lists).
+- **Loops:** the email carries `Auto-Submitted: auto-generated` and `X-Helpdesk-Ticket`, and a help desk address can't be on the list. Staff shouldn't reply to it: a reply goes to the mailbox and opens a new ticket from the staff member.
+- **Failures** (e.g. a suppressed recipient) are retried, then recorded on the ticket as `notification.failed`; they never block the ticket. Successful sends are recorded as `notification.sent`.
+- Sending uses the same Email Sending binding as acknowledgements, so the mailbox's domain must be enabled for Email Sending.
+
+## 4. Writing your own integration
 
 Any plugin can react to and publish events:
 

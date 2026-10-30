@@ -28,6 +28,8 @@ export interface Mailbox {
   fromName: string | null;
   /** Opaque tenant key chosen by the host app (e.g. "company:42"); copied to the mailbox's tickets. */
   partition: string | null;
+  /** Staff addresses emailed when this mailbox opens a new ticket (empty: none). */
+  notifyNewTicket: string[];
 }
 
 export interface Ticket {

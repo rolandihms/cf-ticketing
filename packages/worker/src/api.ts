@@ -71,6 +71,16 @@ const headerText = (v: unknown, field: string): string => {
   return t;
 };
 
+/** New-ticket notification recipients: plain addresses (they become To headers), lowercased, unique, at most 10. */
+function notifyList(v: unknown): string[] {
+  if (!Array.isArray(v)) throw new HttpError(400, "notifyNewTicket must be an array of email addresses");
+  const out = [...new Set(v.map((a) => (typeof a === "string" ? a.trim().toLowerCase() : "")))];
+  if (out.length > 10) throw new HttpError(400, "notifyNewTicket allows at most 10 addresses");
+  const bad = out.find((a) => !MAILBOX_ADDRESS_RE.test(a));
+  if (bad !== undefined) throw new HttpError(400, `notifyNewTicket: ${bad ? `"${bad}"` : "an entry"} is not a plain email address`);
+  return out;
+}
+
 /**
  * A message as the API returns it. An allowlist: R2 keys, the ingest key and the raw auth record stay internal.
  * sender_verified: for inbound mail, whether DMARC proved the From address (null for our own messages and old rows).
@@ -300,6 +310,30 @@ export function createApi(config: HelpdeskOptions) {
       return r.createMailbox({ address, name, refPrefix: b.refPrefix!, fromName, partition });
     });
     return c.json(mailbox, 201);
+  });
+
+  api.patch("/api/mailboxes/:id", async (c) => {
+    requireAdmin(c);
+    const p = principal(c);
+    const b = await body<{ name: string; fromName: string | null; notifyNewTicket: string[] }>(c);
+    const notify = b.notifyNewTicket === undefined ? undefined : notifyList(b.notifyNewTicket);
+    const mailbox = await withRepo(c.env, async (r) => {
+      const current = await r.getMailbox(c.req.param("id"));
+      // Restricted admins manage only their own partition's mailboxes.
+      if (!current || !visible(p, current.partition) || (p.partition !== null && current.partition === null)) return null;
+      if (notify) {
+        // Notifying a help desk address would open a ticket per notification.
+        const own = new Set(await r.listMailboxAddresses());
+        const loop = notify.find((a) => own.has(a));
+        if (loop) throw new HttpError(400, `${loop} is a help desk mailbox; notify a person's address instead`);
+      }
+      return r.updateMailbox(current.id, {
+        ...(b.name !== undefined ? { name: headerText(b.name, "name") } : {}),
+        ...(b.fromName !== undefined ? { fromName: b.fromName === null || b.fromName === "" ? null : headerText(b.fromName, "fromName") } : {}),
+        ...(notify ? { notifyNewTicket: notify } : {}),
+      });
+    });
+    return mailbox ? c.json(mailbox) : c.json({ error: "mailbox not found" }, 404);
   });
 
   // ---- Tickets ---------------------------------------------------------------------------------

@@ -101,6 +101,9 @@ export function createHelpdeskClient(opts: ClientOptions) {
       list: async () => (await json<{ mailboxes: Mailbox[] }>("GET", "/mailboxes")).mailboxes,
       create: (input: { address: string; name: string; refPrefix: string; fromName?: string; partition?: string | null }) =>
         json<Mailbox>("POST", "/mailboxes", { body: input }),
+      /** notifyNewTicket replaces the whole list (max 10; never a help desk address). */
+      update: (id: string, patch: { name?: string; fromName?: string | null; notifyNewTicket?: string[] }) =>
+        json<Mailbox>("PATCH", `/mailboxes/${enc(id)}`, { body: patch }),
     },
   };
 }

@@ -23,6 +23,9 @@ export interface HelpdeskEnv extends DbEnv {
   AI_MODEL?: string;
   AI_GATEWAY_ID?: string;
 
+  /** Link to a ticket in your agent UI, for new-ticket notifications; "{ref}" becomes the ticket ref. */
+  TICKET_URL?: string;
+
   /** Table name prefix, e.g. "hd_" (see docs/EMBEDDING.md). `createHelpdesk({ tablePrefix })` overrides it. */
   TABLE_PREFIX?: string;
 

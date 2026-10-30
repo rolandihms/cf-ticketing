@@ -1,11 +1,19 @@
-import { type GuardResult, type HelpdeskEvent, normalizeMessageId } from "@rolandihms/helpdesk-core";
+import {
+  type ClassificationOutcome,
+  type GuardResult,
+  type HelpdeskEvent,
+  type InboundMessageMeta,
+  type Mailbox,
+  normalizeMessageId,
+  type Ticket,
+} from "@rolandihms/helpdesk-core";
 import type { WorkflowEvent, WorkflowStep } from "cloudflare:workers";
 import type { HelpdeskEnv } from "./env";
 import type { HelpdeskOptions } from "./options";
 import { withRepo } from "@rolandihms/helpdesk-db";
 import { newMessageId, sendViaBinding, type SendFormat } from "./email/outbound";
 import { parseAndStore, type StoredRawRef } from "./email/parse";
-import { ackTemplate } from "./email/templates";
+import { ackTemplate, NOTIFY_BODY_MAX, newTicketTemplate, ticketUrl } from "./email/templates";
 import { ingestInbound } from "./ingest";
 import { classifyStage } from "./classify";
 import { PluginRunner } from "./plugins/runner";
@@ -110,6 +118,14 @@ export async function runInbound(config: HelpdeskOptions, env: HelpdeskEnv, even
       : undefined;
   if (classified) ticket = classified.ticket;
 
+  // Tell staff about new tickets (mailbox setting). Bounces, auto-replies and list mail never notify;
+  // `?? []`: a run that started before the upgrade has a cached mailbox without the field.
+  const recipients = mailbox.notifyNewTicket ?? [];
+  const automated = p.guard.reasons.some((r) => !r.startsWith("dmarc-"));
+  if (persisted.created && !automated && recipients.length) {
+    await notifyNewTicket(env, step, { mailbox, ticket, meta, recipients, senderVerified: p.guard.senderVerified, ...(classified ? { classification: classified.outcome } : {}) });
+  }
+
   const onFailure = (plugin: string, error: string) =>
     withRepo(env, (repo) => repo.addEvent(ticket.id, "plugin.failed", `plugin:${plugin}`, { error }));
   const base = { ticket, mailbox, message: meta, env: env, ...(classified ? { classification: classified.outcome } : {}) };
@@ -118,6 +134,55 @@ export async function runInbound(config: HelpdeskOptions, env: HelpdeskEnv, even
   if (classified) await runner.dispatch("ticket.classified");
 
   return { ticketRef: ticket.ref, ticketId: ticket.id, created: persisted.created, threadedBy: persisted.threadedBy, acked: acked || p.ack === "handled", ...(classified ? { category: classified.outcome.category } : {}) };
+}
+
+/**
+ * Email each recipient a copy of the new ticket, one durable step per address so a retry never re-sends to
+ * the others. A failure is recorded on the ticket, never fails the Workflow: the ticket is already safe.
+ */
+async function notifyNewTicket(
+  env: HelpdeskEnv,
+  step: WorkflowStep,
+  n: { mailbox: Mailbox; ticket: Ticket; meta: InboundMessageMeta; recipients: string[]; senderVerified: boolean; classification?: ClassificationOutcome },
+) {
+  const { mailbox, ticket, meta } = n;
+  const body = await step.do("notify:body", async () => {
+    const obj = meta.textKey ? await env.MAIL.get(meta.textKey) : null;
+    return obj ? (await obj.text()).slice(0, NOTIFY_BODY_MAX + 1) : meta.textPreview;
+  });
+  const tpl = newTicketTemplate({ ...n, inbound: meta, body, ticketUrl: ticketUrl(env.TICKET_URL, ticket.ref) });
+  const sent: string[] = [];
+  const failed: { to: string; error: string }[] = [];
+  for (const to of n.recipients) {
+    try {
+      await step.do(`notify:${to}`, { retries: { limit: 6, delay: "1 minute", backoff: "exponential" }, timeout: "2 minutes" }, async () => {
+        await sendViaBinding(
+          env.EMAIL,
+          {
+            from: { email: mailbox.address, name: mailbox.fromName ?? mailbox.name },
+            to: { email: to, name: null },
+            subject: tpl.subject,
+            text: tpl.text,
+            html: tpl.html,
+            messageId: newMessageId(mailbox.address.split("@")[1]!),
+            ticketRef: ticket.ref,
+            autoSubmitted: "auto-generated",
+          },
+          (env.EMAIL_SEND_FORMAT as SendFormat) || "raw",
+        );
+        return true;
+      });
+      sent.push(to);
+    } catch (err) {
+      failed.push({ to, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  await step.do("notify:record", () =>
+    withRepo(env, async (repo) => {
+      if (sent.length) await repo.addEvent(ticket.id, "notification.sent", "system:notify", { to: sent });
+      for (const f of failed) await repo.addEvent(ticket.id, "notification.failed", "system:notify", f);
+    }),
+  );
 }
 
 /** Agent actions (API) whose events are delivered to plugins' onEvent, durably and with retries. */
