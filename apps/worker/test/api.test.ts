@@ -568,3 +568,151 @@ describe("agent-action events", () => {
     expect(res.json.status).toBe("open");
   });
 });
+
+describe("requesters (customers of the host app)", () => {
+  // Portal calls queue a Workflow; a stub records them so these tests stay synchronous.
+  const queued: { id: string; params: any }[] = [];
+  const INBOUND_WORKFLOW = { create: async (o: { id: string; params: unknown }) => void queued.push(o as any) } as unknown as Workflow;
+  const as = (who: Record<string, unknown>, method: string, path: string, o: { body?: unknown; idem?: string } = {}) =>
+    call(method, path, {
+      env: { ...TRUSTED, INBOUND_WORKFLOW },
+      body: o.body,
+      headers: { "x-helpdesk-service-key": "svc-key", "x-helpdesk-principal": JSON.stringify(who), ...(o.idem ? { "idempotency-key": o.idem } : {}) },
+    });
+  const ann = { externalId: "cust_1", email: "ann@cust.example", name: "Ann", role: "requester", partition: "company:1" };
+  const ben = { externalId: "cust_2", email: "ben@cust.example", name: "Ben", role: "requester", partition: "company:1", visibility: "partition" };
+  const eve = { externalId: "cust_3", email: "eve@cust.example", name: "Eve", role: "requester", partition: "company:2", visibility: "partition" };
+  const raise = (who: Record<string, unknown>, subject: string, extra: object = {}) =>
+    as(who, "POST", "/api/tickets", { body: { mailbox: SUPPORT, subject, text: `${subject}: no power since this morning`, ...extra } });
+  beforeEach(() => void (queued.length = 0));
+
+  it("validates the requester identity", async () => {
+    expect((await as({ ...ann, visibility: "everything" }, "GET", "/api/tickets")).status).toBe(400);
+    expect((await as({ ...ann, partition: null, visibility: "partition" }, "GET", "/api/tickets")).status).toBe(400);
+    expect((await host("GET", "/api/me", { ...kim, visibility: "own" })).status).toBe(400);
+    const me = await as(ann, "GET", "/api/me");
+    expect(me.json).toMatchObject({ kind: "requester", visibility: "own", partition: "company:1", contact: { externalId: "cust_1", name: "Ann" } });
+  });
+
+  it("raises a ticket idempotently, in its company, and queues it for classification", async () => {
+    const body = { mailbox: SUPPORT, subject: "Meter offline", text: "My meter shows nothing.", metadata: { "realty.siteId": "42" } };
+    const first = await as(ann, "POST", "/api/tickets", { body, idem: "k1" });
+    expect(first.status).toBe(201);
+    expect(first.json).toEqual({
+      ref: "ACME-000001", subject: "Meter offline", status: "new", source: "portal", createdAt: expect.any(Number), updatedAt: expect.any(Number),
+      metadata: { "realty.siteId": "42" }, requester: { name: "Ann", isYou: true },
+    });
+    const again = await as(ann, "POST", "/api/tickets", { body, idem: "k1" });
+    expect(again.status).toBe(200);
+    expect(again.json.ref).toBe("ACME-000001");
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.params).toMatchObject({ kind: "portal", created: true, ack: false });
+
+    const staffView = (await admin("GET", "/api/tickets/ACME-000001")).json;
+    expect(staffView.ticket).toMatchObject({ partition: "company:1", source: "portal", requesterVerified: true });
+    expect(staffView.requester).toMatchObject({ email: "ann@cust.example", externalId: "cust_1" });
+    expect(staffView.messages[0]).toMatchObject({ kind: "customer", sender_verified: true, author_contact_id: staffView.requester.id });
+    // Requesters are contacts, never agents.
+    expect((await admin("GET", "/api/agents")).json.agents.map((a: any) => a.email)).not.toContain("ann@cust.example");
+
+    expect((await raise(ann, "x", { source: "fax" })).status).toBe(400);
+    expect((await raise(ann, "x", { partition: "company:2" })).status).toBe(403);
+    expect((await raise(ann, "x", { metadata: Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`k${i}`, "v"])) })).status).toBe(400);
+    expect((await raise(ann, "x", { mailbox: "nope@acme.test" })).status).toBe(404);
+  });
+
+  it("shows only the tickets it may see, and only their public side, by name", async () => {
+    const t1 = (await raise(ann, "Ann's outage")).json.ref;
+    const t2 = (await raise(ben, "Ben's bill")).json.ref;
+    const t3 = (await raise(eve, "Eve's meter")).json.ref;
+    // Mail "from" Ann that DMARC didn't prove must never surface in her portal.
+    const r = repo();
+    const annContact = (await r.upsertContactByExternalId({ externalId: "cust_1", email: "ann@cust.example", name: "Ann" }));
+    const forged = await r.createTicketWithFirstMessage({
+      mailbox: (await r.getMailboxByAddress(SUPPORT))!, requesterId: annContact.id, subject: "Forged", sourceIngestKey: "f".repeat(64), attachments: [],
+      requesterVerified: false,
+      message: { direction: "inbound", kind: "customer", ingest_key: "f".repeat(64), message_id_hdr: null, provider_msg_id: null, in_reply_to: null, from_addr: "ann@cust.example", to_json: "[]", cc_json: null, subject: "Forged", text_preview: "x", text_r2_key: null, html_r2_key: null, raw_r2_key: null, auth_json: '{"senderVerified":false}', author_agent_id: null },
+    });
+
+    const refs = async (who: Record<string, unknown>) => (await as(who, "GET", "/api/tickets")).json.tickets.map((t: any) => t.ref);
+    expect(await refs(ann)).toEqual([t1]);
+    expect(await refs(ben)).toEqual([t2, t1]);
+    expect(await refs(eve)).toEqual([t3]);
+    expect((await as(ann, "GET", `/api/tickets/${forged.ticket.ref}`)).status).toBe(404);
+    expect((await as(ann, "GET", `/api/tickets/${t2}`)).status).toBe(404);
+    expect((await as(ben, "GET", `/api/tickets/${t1}`)).json.ticket.requester).toEqual({ name: "Ann", isYou: false });
+
+    // Staff activity: a note (internal) and an agent reply (public).
+    const boss = (await admin("POST", "/api/agents", { email: "boss@acme.test", name: "Boss", role: "admin" })).json;
+    const note = (await admin("POST", `/api/tickets/${t1}/notes`, { text: "Internal: check the breaker log" })).json;
+    const ticket = (await r.findTicketByRef(t1))!;
+    await r.appendMessage({
+      ticket, reopen: false, actor: `agent:${boss.id}`, attachments: [],
+      message: { direction: "outbound", kind: "agent_reply", ingest_key: null, message_id_hdr: "<r1@acme.test>", provider_msg_id: null, in_reply_to: null, from_addr: SUPPORT, to_json: '["ann@cust.example"]', cc_json: null, subject: "Re", text_preview: "We are on our way", text_r2_key: null, html_r2_key: null, raw_r2_key: null, auth_json: null, author_agent_id: boss.id },
+    });
+    const view = await as(ann, "GET", `/api/tickets/${t1}`);
+    expect(view.json.messages.map((m: any) => [m.kind, m.author])).toEqual([
+      ["customer", { name: "Ann", staff: false, isYou: true }],
+      ["agent_reply", { name: "Boss", staff: true, isYou: false }],
+    ]);
+    const raw = JSON.stringify(view.json);
+    expect(raw).not.toContain("@");
+    for (const key of ["summary", "category", "assignee", "priority", "events", "classifications", "partition"]) expect(raw).not.toContain(`"${key}`);
+
+    expect((await as(ann, "GET", `/api/messages/${note.id}/text`)).status).toBe(404);
+    expect((await as(ann, "GET", `/api/messages/${view.json.messages[0].id}/text`)).status).toBe(200);
+    expect((await as(eve, "GET", `/api/messages/${view.json.messages[0].id}/text`)).status).toBe(404);
+  });
+
+  it("can't reach anything staff-only", async () => {
+    const ref = (await raise(ann, "x")).json.ref;
+    for (const [method, path, body] of [
+      ["GET", "/api/agents"], ["GET", "/api/mailboxes"], ["PATCH", `/api/tickets/${ref}`, { status: "solved" }],
+      ["POST", `/api/tickets/${ref}/notes`, { text: "x" }], ["POST", `/api/tickets/${ref}/replies`, { text: "x" }],
+      ["PATCH", "/api/mailboxes/x", { name: "x" }], ["POST", "/api/agents", { email: "x@y.test", name: "x" }],
+    ] as const) {
+      expect((await as(ann, method, path, { body })).status, `${method} ${path}`).toBe(403);
+    }
+  });
+
+  it("replies on visible tickets, idempotently, as itself; a reply reopens a solved ticket", async () => {
+    const ref = (await raise(ann, "Outage")).json.ref;
+    await admin("PATCH", `/api/tickets/${ref}`, { status: "solved" });
+    queued.length = 0;
+    const res = await as(ben, "POST", `/api/tickets/${ref}/messages`, { body: { text: "Still off at unit 7." }, idem: "m1" });
+    expect(res.status).toBe(201);
+    expect(res.json.message).toMatchObject({ kind: "customer", author: { name: "Ben", staff: false, isYou: true }, preview: "Still off at unit 7." });
+    expect(res.json.ticket).toMatchObject({ ref, status: "open", requester: { name: "Ann", isYou: false } });
+    const again = await as(ben, "POST", `/api/tickets/${ref}/messages`, { body: { text: "Still off at unit 7." }, idem: "m1" });
+    expect(again.status).toBe(200);
+    expect(again.json.message.id).toBe(res.json.message.id);
+    expect(queued.map((q) => q.params)).toEqual([expect.objectContaining({ kind: "portal", created: false })]);
+
+    expect((await as(eve, "POST", `/api/tickets/${ref}/messages`, { body: { text: "x" } })).status).toBe(404);
+    expect((await admin("POST", `/api/tickets/${ref}/messages`, { text: "x" })).status).toBe(403);
+    const staffView = (await admin("GET", `/api/tickets/${ref}`)).json;
+    expect(staffView.messages.at(-1)).toMatchObject({ from_addr: "ben@cust.example", sender_verified: true });
+    expect(staffView.messages.at(-1).author_contact_id).not.toBe(staffView.requester.id);
+  });
+
+  it("staff raise tickets for customers; only unrestricted admins move tickets between partitions", async () => {
+    const res = await call("POST", "/api/tickets", {
+      token: "test-token", env: { INBOUND_WORKFLOW },
+      body: { mailbox: SUPPORT, subject: "Called in", text: "Phoned about a leak", partition: "company:3", requester: { email: "Zed@Cust.example", name: "Zed", externalId: "cust_9" }, ack: true },
+    });
+    expect(res.status).toBe(201);
+    expect(res.json).toMatchObject({ partition: "company:3", source: "portal", requesterVerified: true });
+    expect(queued[0]!.params).toMatchObject({ created: true, ack: true });
+    expect((await call("POST", "/api/tickets", { token: "test-token", env: { INBOUND_WORKFLOW }, body: { mailbox: SUPPORT, subject: "x", text: "y" } })).status).toBe(400);
+    expect((await host("POST", "/api/tickets", kim, { body: { mailbox: SUPPORT, subject: "x", text: "y", partition: "company:2", requester: { email: "a@b.test" } } })).status).toBe(403);
+
+    const ref = res.json.ref;
+    expect((await admin("PATCH", `/api/tickets/${ref}`, { metadata: { "realty.unitId": "7" } })).json.metadata).toEqual({ "realty.unitId": "7" });
+    expect((await admin("PATCH", `/api/tickets/${ref}`, { metadata: { "bad key!": "x" } })).status).toBe(400);
+    expect((await admin("PATCH", `/api/tickets/${ref}`, { partition: "company:4" })).json.partition).toBe("company:4");
+    expect((await host("PATCH", `/api/tickets/${ref}`, { ...kim, role: "admin", partition: "company:4" }, { body: { partition: null } })).status).toBe(403);
+
+    // The email belongs to cust_9 now; another host user claiming it is refused.
+    expect((await as({ ...ann, externalId: "cust_x", email: "zed@cust.example" }, "GET", "/api/tickets")).status).toBe(409);
+  });
+});

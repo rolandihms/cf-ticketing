@@ -15,6 +15,8 @@ export interface ContactsTable {
   email: string;
   name: string | null;
   created_at: number;
+  /** The host app's user id (requesters); null for contacts known only by email. */
+  external_id: string | null;
 }
 
 export interface AgentsTable {
@@ -50,6 +52,10 @@ export interface TicketsTable {
   code_related: number | null;
   summary: string | null;
   partition_key: string | null;
+  /** JSON object of string → string, set by the host. */
+  metadata_json: string | null;
+  /** 1: requester proven (portal/app, or dmarc=pass email); 0: not; null: before 0006. */
+  requester_verified: number | null;
 }
 
 export interface MessagesTable {
@@ -72,6 +78,8 @@ export interface MessagesTable {
   raw_r2_key: string | null;
   auth_json: string | null;
   author_agent_id: string | null;
+  /** The contact who posted a requester message through the host app. */
+  author_contact_id: string | null;
   created_at: number;
 }
 

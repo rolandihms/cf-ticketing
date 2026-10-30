@@ -49,91 +49,104 @@ export async function runInbound(config: HelpdeskOptions, env: HelpdeskEnv, even
     }),
   );
   const { mailbox } = persisted;
-  let ticket = persisted.ticket;
-
-  let acked = false;
   const shouldAck = p.ack === "workflow" && persisted.created && p.guard.allowAutoReply && config.ackNewTickets !== false;
-  if (shouldAck) {
-    const sent = await step.do(
-      "ack:send",
-      { retries: { limit: 6, delay: "1 minute", backoff: "exponential" }, timeout: "2 minutes" },
-      async () => {
-        const tpl = ackTemplate(mailbox, ticket, meta);
-        const messageId = newMessageId(mailbox.address.split("@")[1]!);
-        const res = await sendViaBinding(
-          env.EMAIL,
-          {
-            from: { email: mailbox.address, name: mailbox.fromName ?? mailbox.name },
-            to: { email: meta.from.address, name: meta.from.name },
-            subject: tpl.subject,
-            text: tpl.text,
-            html: tpl.html,
-            messageId,
-            inReplyTo: meta.messageId,
-            references: meta.references.slice().reverse(),
-            ticketRef: ticket.ref,
-            autoSubmitted: true,
-          },
-          (env.EMAIL_SEND_FORMAT as SendFormat) || "raw",
-        );
-        const providerMessageId = res.providerMessageId ? normalizeMessageId(res.providerMessageId) ?? res.providerMessageId : null;
-        return { messageId, providerMessageId, subject: tpl.subject, text: tpl.text };
-      },
-    );
-    // Separate step so a DB hiccup here never re-sends the email (step results are cached).
-    await step.do("ack:record", () =>
-      withRepo(env, (repo) => repo.appendMessage({
-        ticket,
-        reopen: false,
-        actor: "system:ack",
-        attachments: [],
-        message: {
-          direction: "outbound",
-          kind: "ack",
-          ingest_key: null,
-          message_id_hdr: sent.messageId,
-          provider_msg_id: sent.providerMessageId,
-          in_reply_to: meta.messageId,
-          from_addr: mailbox.address,
-          to_json: JSON.stringify([meta.from.address]),
-          cc_json: null,
-          subject: sent.subject,
-          text_preview: sent.text.slice(0, 500),
-          text_r2_key: null,
-          html_r2_key: null,
-          raw_r2_key: null,
-          auth_json: null,
-          author_agent_id: null,
-        },
-      })),
-    );
-    acked = true;
-  }
+  const acked = shouldAck ? await sendAck(env, step, mailbox, persisted.ticket, meta) : false;
+  // Bounces, auto-replies and list mail never notify staff.
+  const automated = p.guard.reasons.some((r) => !r.startsWith("dmarc-"));
+  const { ticket, classified } = await afterIngest(config, env, step, {
+    mailbox, ticket: persisted.ticket, created: persisted.created, messageId: persisted.messageId, meta,
+    senderVerified: p.guard.senderVerified, notify: !automated,
+  });
+  return { ticketRef: ticket.ref, ticketId: ticket.id, created: persisted.created, threadedBy: persisted.threadedBy, acked: acked || p.ack === "handled", ...(classified ? { category: classified.outcome.category } : {}) };
+}
 
-  // Classify new tickets (and replies, if enabled) before plugins run, so hooks see the result.
+/** Acknowledge a new ticket by email and record it. Step names are part of the Workflow's replay contract. */
+async function sendAck(env: HelpdeskEnv, step: WorkflowStep, mailbox: Mailbox, ticket: Ticket, meta: InboundMessageMeta) {
+  const sent = await step.do(
+    "ack:send",
+    { retries: { limit: 6, delay: "1 minute", backoff: "exponential" }, timeout: "2 minutes" },
+    async () => {
+      const tpl = ackTemplate(mailbox, ticket, meta);
+      const messageId = newMessageId(mailbox.address.split("@")[1]!);
+      const res = await sendViaBinding(
+        env.EMAIL,
+        {
+          from: { email: mailbox.address, name: mailbox.fromName ?? mailbox.name },
+          to: { email: meta.from.address, name: meta.from.name },
+          subject: tpl.subject,
+          text: tpl.text,
+          html: tpl.html,
+          messageId,
+          inReplyTo: meta.messageId,
+          references: meta.references.slice().reverse(),
+          ticketRef: ticket.ref,
+          autoSubmitted: true,
+        },
+        (env.EMAIL_SEND_FORMAT as SendFormat) || "raw",
+      );
+      const providerMessageId = res.providerMessageId ? normalizeMessageId(res.providerMessageId) ?? res.providerMessageId : null;
+      return { messageId, providerMessageId, subject: tpl.subject, text: tpl.text };
+    },
+  );
+  // Separate step so a DB hiccup here never re-sends the email (step results are cached).
+  await step.do("ack:record", () =>
+    withRepo(env, (repo) => repo.appendMessage({
+      ticket,
+      reopen: false,
+      actor: "system:ack",
+      attachments: [],
+      message: {
+        direction: "outbound",
+        kind: "ack",
+        ingest_key: null,
+        message_id_hdr: sent.messageId,
+        provider_msg_id: sent.providerMessageId,
+        in_reply_to: meta.messageId,
+        from_addr: mailbox.address,
+        to_json: JSON.stringify([meta.from.address]),
+        cc_json: null,
+        subject: sent.subject,
+        text_preview: sent.text.slice(0, 500),
+        text_r2_key: null,
+        html_r2_key: null,
+        raw_r2_key: null,
+        auth_json: null,
+        author_agent_id: null,
+      },
+    })),
+  );
+  return true;
+}
+
+/**
+ * Everything after a message is stored, for mail and for portal/app messages alike: classify (new tickets,
+ * and replies if enabled), notify staff about new tickets, then run the plugins.
+ */
+async function afterIngest(
+  config: HelpdeskOptions,
+  env: HelpdeskEnv,
+  step: WorkflowStep,
+  x: { mailbox: Mailbox; ticket: Ticket; created: boolean; messageId: string; meta: InboundMessageMeta; senderVerified: boolean; notify: boolean },
+) {
+  const { mailbox, meta } = x;
+  let ticket = x.ticket;
   const cls = config.classification;
-  const classified =
-    cls && (persisted.created || cls.reclassifyOnReply)
-      ? await classifyStage(step, env, cls, ticket, persisted.messageId, meta)
-      : undefined;
+  const classified = cls && (x.created || cls.reclassifyOnReply) ? await classifyStage(step, env, cls, ticket, x.messageId, meta) : undefined;
   if (classified) ticket = classified.ticket;
 
-  // Tell staff about new tickets (mailbox setting). Bounces, auto-replies and list mail never notify;
   // `?? []`: a run that started before the upgrade has a cached mailbox without the field.
   const recipients = mailbox.notifyNewTicket ?? [];
-  const automated = p.guard.reasons.some((r) => !r.startsWith("dmarc-"));
-  if (persisted.created && !automated && recipients.length) {
-    await notifyNewTicket(env, step, { mailbox, ticket, meta, recipients, senderVerified: p.guard.senderVerified, ...(classified ? { classification: classified.outcome } : {}) });
+  if (x.created && x.notify && recipients.length) {
+    await notifyNewTicket(env, step, { mailbox, ticket, meta, recipients, senderVerified: x.senderVerified, ...(classified ? { classification: classified.outcome } : {}) });
   }
 
   const onFailure = (plugin: string, error: string) =>
     withRepo(env, (repo) => repo.addEvent(ticket.id, "plugin.failed", `plugin:${plugin}`, { error }));
   const base = { ticket, mailbox, message: meta, env: env, ...(classified ? { classification: classified.outcome } : {}) };
   const runner = new PluginRunner(config, step, (actor) => ticketServices(env, ticket.id, actor), base, onFailure, meta.ingestKey.slice(0, 12));
-  await runner.dispatch(persisted.created ? "ticket.created" : "message.received");
+  await runner.dispatch(x.created ? "ticket.created" : "message.received");
   if (classified) await runner.dispatch("ticket.classified");
-
-  return { ticketRef: ticket.ref, ticketId: ticket.id, created: persisted.created, threadedBy: persisted.threadedBy, acked: acked || p.ack === "handled", ...(classified ? { category: classified.outcome.category } : {}) };
+  return { ticket, classified };
 }
 
 /**
@@ -194,9 +207,70 @@ export interface AgentEventsParams {
   events: Omit<HelpdeskEvent, "id">[];
 }
 
-export type HelpdeskWorkflowParams = InboundParams | AgentEventsParams;
+/** A ticket or reply a requester (or staff on their behalf) posted through the API (portal/app). */
+export interface PortalParams {
+  kind: "portal";
+  ticketId: string;
+  messageId: string;
+  /** The message opened the ticket. */
+  created: boolean;
+  /** Email the requester an acknowledgement (new tickets only). */
+  ack: boolean;
+}
+
+export type HelpdeskWorkflowParams = InboundParams | AgentEventsParams | PortalParams;
 
 export const isAgentEvents = (p: Readonly<HelpdeskWorkflowParams>): p is Readonly<AgentEventsParams> => (p as AgentEventsParams).kind === "agent-events";
+export const isPortal = (p: Readonly<HelpdeskWorkflowParams>): p is Readonly<PortalParams> => (p as PortalParams).kind === "portal";
+
+/** The portal/app counterpart of runInbound: the message is already stored, so ack → classify → notify → plugins. */
+export async function runPortal(config: HelpdeskOptions, env: HelpdeskEnv, event: WorkflowEvent<PortalParams>, step: WorkflowStep) {
+  const p = event.payload;
+  const loaded = await step.do("load", () =>
+    withRepo(env, async (repo) => {
+      const ticket = await repo.getTicket(p.ticketId);
+      const message = await repo.getMessage(p.messageId);
+      const mailbox = ticket ? await repo.getMailbox(ticket.mailboxId) : null;
+      const author = message ? await repo.getContact(message.author_contact_id ?? ticket?.requesterId ?? "") : null;
+      if (!ticket || !message || !mailbox || !author) return null;
+      const meta: InboundMessageMeta = {
+        ingestKey: message.ingest_key ?? message.id,
+        mailboxAddress: mailbox.address,
+        envelopeFrom: author.email,
+        from: { address: author.email, name: author.name },
+        to: [mailbox.address],
+        cc: [],
+        subject: message.subject,
+        messageId: null,
+        inReplyTo: null,
+        references: [],
+        date: Number(message.created_at),
+        rawKey: "",
+        textKey: message.text_r2_key,
+        htmlKey: null,
+        textPreview: message.text_preview ?? "",
+        attachments: [],
+      };
+      return { ticket, mailbox, meta };
+    }),
+  );
+  if (!loaded) return { skipped: true };
+  const { mailbox, meta } = loaded;
+  const acked = p.created && p.ack && config.ackNewTickets !== false ? await sendAck(env, step, mailbox, loaded.ticket, meta) : false;
+  const { ticket, classified } = await afterIngest(config, env, step, {
+    mailbox, ticket: loaded.ticket, created: p.created, messageId: p.messageId, meta, senderVerified: true, notify: true,
+  });
+  return { ticketRef: ticket.ref, acked, ...(classified ? { category: classified.outcome.category } : {}) };
+}
+
+/** Start the Workflow for a portal/app message. A failure is logged: the message itself is stored. */
+export async function queuePortal(env: HelpdeskEnv, params: Omit<PortalParams, "kind">) {
+  try {
+    await env.INBOUND_WORKFLOW.create({ id: `portal-${params.messageId}`, params: { kind: "portal", ...params } satisfies PortalParams });
+  } catch (err) {
+    console.error(JSON.stringify({ msg: "could not queue portal message", ticketId: params.ticketId, error: String(err) }));
+  }
+}
 
 export async function runAgentEvents(config: HelpdeskOptions, env: HelpdeskEnv, event: WorkflowEvent<AgentEventsParams>, step: WorkflowStep) {
   const p = event.payload;

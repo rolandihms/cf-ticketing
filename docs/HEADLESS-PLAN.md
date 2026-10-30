@@ -107,6 +107,12 @@ Published: 0.1.0 on 2026-10-27. A security review of the published code found no
 
 0.1.3 (2026-10-30): the PlanetScale driver works again. `@planetscale/database` 2.0 (2026-09-24) rejects query parameters, which `kysely-planetscale` passes, so every PlanetScale query failed (first seen on Realty's production help desk; D1, Postgres and MySQL were unaffected). `helpdesk-db` now pins `^1.20.2` and carries its own copy of the small Kysely dialect, so an app's lockfile can't hand it a 2.x client; a fake-endpoint test covers queries and transactions.
 
+0.2.0 (prepared 2026-10-30): requesters, customers of the host app (docs/EMBEDDING.md §7). Migration `0006_requesters`: `contacts.external_id`, `tickets.metadata_json`, `tickets.requester_verified`, `messages.author_contact_id`.
+- trusted principal role `requester` (a contact, never an agent) with `visibility` `own` or `partition`;
+- `POST /api/tickets` (requesters, and staff on a customer's behalf) through the same Workflow as mail;
+- requester list, detail and replies that return only the public side, names only, verified requesters only;
+- ticket `metadata` and `source`; admins can move a ticket to another partition.
+
 Blocked on approval: the R2 bucket, the hand-run SQL on PlanetScale (`server/prisma/manual_2026_10_29_helpdesk_tables.sql` in portal_he_ui), the secrets, the deploys, and the Email Routing rule for support@realtyonrecord.com (routing is on for the zone since 2026-10-29; help-dev@ goes to realty-helpdesk-dev).
 
 The plan:

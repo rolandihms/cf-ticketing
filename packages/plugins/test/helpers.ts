@@ -17,6 +17,9 @@ export const ticket = {
   categoryConfidence: 0.9,
   codeRelated: true,
   summary: "Export to CSV on the Reports page spins forever.",
+  source: "email",
+  metadata: {},
+  requesterVerified: true,
 };
 
 export const bug: ClassificationOutcome = {
@@ -38,7 +41,7 @@ export function fakeCtx<Env>(env: Env, extra: Partial<HookContext<Env>> = {}) {
   const ctx = {
     event: "ticket.classified" as const,
     ticket,
-    mailbox: { id: "mb", address: "support@ihms.dev", name: "IHMS", refPrefix: "IHMS", fromName: null, partition: null },
+    mailbox: { id: "mb", address: "support@ihms.dev", name: "IHMS", refPrefix: "IHMS", fromName: null, partition: null, notifyNewTicket: [] },
     message: { ingestKey: "k".repeat(64) } as HookContext["message"],
     env,
     log: () => {},

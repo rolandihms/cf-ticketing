@@ -50,11 +50,22 @@ export interface Ticket {
   categoryConfidence: number | null;
   codeRelated: boolean | null;
   summary: string | null;
-  /** From the mailbox at creation. */
+  /** From the mailbox, or the requester's company, at creation. */
   partition: string | null;
+  /** "email", "portal" or "app". */
+  source: string;
+  /** String pairs set by the host app (≤20 keys), e.g. { "realty.siteId": "42" }. */
+  metadata: Record<string, string>;
+  /**
+   * Whether the requester is proven: portal/app tickets and email with dmarc=pass. Requesters only see
+   * verified tickets. null for tickets from before 0.2.0.
+   */
+  requesterVerified: boolean | null;
 }
 
-export interface Principal {
+export type Principal = StaffPrincipal | RequesterPrincipal;
+
+export interface StaffPrincipal {
   kind: "service" | "agent";
   role: AgentRole;
   /** Recorded on ticket events, e.g. "agent:01H…" or "api". */
@@ -65,10 +76,23 @@ export interface Principal {
   via: "token" | "access" | "trusted";
 }
 
+/** A customer of the host app (docs/EMBEDDING.md §7). */
+export interface RequesterPrincipal {
+  kind: "requester";
+  role: "requester";
+  actor: string;
+  contact: Contact;
+  partition: string | null;
+  visibility: "own" | "partition";
+  via: "trusted";
+}
+
 export interface Contact {
   id: string;
   email: string;
   name: string | null;
+  /** The host app's user id, for contacts that are requesters there. */
+  externalId: string | null;
 }
 
 export interface Message {
@@ -89,6 +113,8 @@ export interface Message {
   /** First 500 characters; the full text is at messages.text(id). */
   text_preview: string | null;
   author_agent_id: string | null;
+  /** The contact who posted a requester message through the host app. */
+  author_contact_id: string | null;
   created_at: number;
   /**
    * Inbound mail only: true when DMARC proved the From address. false means the sender may be forged, so
@@ -165,4 +191,64 @@ export interface TicketPatch {
   priority?: TicketPriority;
   /** An agent id, "me", or null to unassign. */
   assignee?: string | null;
+  /** Replaces the whole map (≤20 keys of [A-Za-z0-9_.:-], values ≤200 chars). */
+  metadata?: Record<string, string>;
+  /** Unrestricted admins only: move the ticket to another tenant (null = none). */
+  partition?: string | null;
+}
+
+/** POST /api/tickets: raise a ticket from your app (no email involved). */
+export interface NewTicketInput {
+  /** Mailbox address or id: the queue it lands in, and the sender of any email about it. */
+  mailbox: string;
+  subject: string;
+  text: string;
+  /** Default "portal". */
+  source?: "portal" | "app";
+  metadata?: Record<string, string>;
+  /** Email the requester an acknowledgement. Default false. */
+  ack?: boolean;
+  /** Retries with the same key return the first ticket instead of opening another. */
+  idempotencyKey?: string;
+}
+
+/** Staff raising a ticket on a customer's behalf name the customer. */
+export interface StaffNewTicketInput extends NewTicketInput {
+  requester: { email: string; name?: string; externalId?: string };
+  /** Unrestricted callers: default the mailbox's partition. */
+  partition?: string | null;
+}
+
+// ---- What requesters see (names only, never email addresses) ----
+
+export interface RequesterTicket {
+  ref: string;
+  subject: string;
+  status: TicketStatus;
+  source: string;
+  createdAt: number;
+  updatedAt: number;
+  metadata: Record<string, string>;
+  /** Who raised it; isYou when it was the caller. */
+  requester: { name: string; isYou: boolean };
+}
+
+export interface RequesterMessage {
+  id: string;
+  kind: "customer" | "ack" | "agent_reply";
+  author: { name: string; staff: boolean; isYou: boolean };
+  /** The first 500 characters; the full text is requester.messageText(id). */
+  preview: string;
+  createdAt: number;
+  attachments: { id: string; filename: string | null; mimeType: string; size: number }[];
+}
+
+export interface RequesterTicketDetail {
+  ticket: RequesterTicket;
+  messages: RequesterMessage[];
+}
+
+export interface RequesterTicketPage {
+  tickets: RequesterTicket[];
+  nextCursor: string | null;
 }

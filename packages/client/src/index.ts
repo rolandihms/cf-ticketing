@@ -1,6 +1,6 @@
 // @rolandihms/helpdesk-client: a small typed client for the help desk API. No framework, no dependencies at
 // runtime: works in browsers, Workers and Node. Bring your own UI (docs/EMBEDDING.md).
-import type { Agent, AgentRole, Mailbox, Message, Principal, Ticket, TicketDetail, TicketFilter, TicketPage, TicketPatch, TicketStatus } from "./types";
+import type { Agent, AgentRole, Mailbox, Message, NewTicketInput, Principal, RequesterMessage, RequesterTicket, RequesterTicketDetail, RequesterTicketPage, StaffNewTicketInput, Ticket, TicketDetail, TicketFilter, TicketPage, TicketPatch, TicketStatus } from "./types";
 
 export type * from "./types";
 
@@ -53,6 +53,7 @@ export function createHelpdeskClient(opts: ClientOptions) {
   }
   const json = async <T>(method: string, path: string, init?: Parameters<typeof send>[2]) => (await (await send(method, path, init)).json()) as T;
   const enc = encodeURIComponent;
+  const idem = (key: string | undefined): Record<string, string> => (key ? { "idempotency-key": key } : {});
 
   return {
     /** Who the API thinks you are (role, partition, agent record). */
@@ -77,6 +78,26 @@ export function createHelpdeskClient(opts: ClientOptions) {
           body: { text: input.text, ...(input.status ? { status: input.status } : {}) },
           headers: input.idempotencyKey ? { "idempotency-key": input.idempotencyKey } : {},
         }),
+      /** Raise a ticket on a customer's behalf (staff). It is classified and announced like an emailed one. */
+      create: ({ idempotencyKey, ...input }: StaffNewTicketInput) =>
+        json<Ticket>("POST", "/tickets", { body: input, headers: idem(idempotencyKey) }),
+    },
+
+    /**
+     * For a requester principal (a customer of your app, docs/EMBEDDING.md §7): only the tickets it may see,
+     * only their public side, and names instead of email addresses.
+     */
+    requester: {
+      list: (f: { status?: TicketStatus | TicketStatus[]; limit?: number; cursor?: string } = {}) =>
+        json<RequesterTicketPage>("GET", "/tickets", { query: { ...f, status: Array.isArray(f.status) ? f.status.join(",") : f.status } }),
+      get: (ref: string) => json<RequesterTicketDetail>("GET", `/tickets/${enc(ref)}`),
+      /** Raise a ticket; it lands in the requester's partition. Pass an idempotencyKey per form submission. */
+      create: ({ idempotencyKey, ...input }: NewTicketInput) => json<RequesterTicket>("POST", "/tickets", { body: input, headers: idem(idempotencyKey) }),
+      /** Reply on a visible ticket (reopens it if it was waiting or solved). No email goes to anyone. */
+      reply: (ref: string, input: { text: string; idempotencyKey?: string }) =>
+        json<{ message: RequesterMessage; ticket: RequesterTicket }>("POST", `/tickets/${enc(ref)}/messages`, { body: { text: input.text }, headers: idem(input.idempotencyKey) }),
+      messageText: async (id: string) => (await send("GET", `/messages/${enc(id)}/text`)).text(),
+      attachmentUrl: (id: string) => `${base}/attachments/${enc(id)}`,
     },
 
     messages: {

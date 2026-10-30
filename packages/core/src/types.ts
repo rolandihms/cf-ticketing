@@ -50,8 +50,17 @@ export interface Ticket {
   categoryConfidence: number | null;
   codeRelated: boolean | null;
   summary: string | null;
-  /** From the mailbox at creation. */
+  /** From the mailbox, or the requester's company, at creation. */
   partition: string | null;
+  /** "email", "portal" or "app". */
+  source: string;
+  /** String pairs set by the host app (≤20 keys), e.g. { "realty.siteId": "42" }. */
+  metadata: Record<string, string>;
+  /**
+   * Whether the requester is proven: portal/app tickets and email with dmarc=pass. Requesters only see
+   * verified tickets. null for tickets from before 0.2.0.
+   */
+  requesterVerified: boolean | null;
 }
 
 /** Parsed inbound email, small enough to pass between Workflow steps (bodies live in R2). */

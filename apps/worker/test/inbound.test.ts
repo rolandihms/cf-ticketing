@@ -205,6 +205,47 @@ describe("new-ticket notifications", () => {
   });
 });
 
+describe("portal/app tickets (requesters)", () => {
+  const ann = { externalId: "cust_1", email: CUSTOMER, name: "Jane", role: "requester", partition: "company:1" };
+  const post = async (path: string, body: unknown) =>
+    worker.fetch(
+      new Request(`https://hd.test${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-helpdesk-service-key": "svc-key", "x-helpdesk-principal": JSON.stringify(ann) },
+        body: JSON.stringify(body),
+      }),
+      { ...env, TRUSTED_PRINCIPAL: "on", HELPDESK_SERVICE_KEY: "svc-key" },
+      {} as ExecutionContext,
+    );
+
+  it("runs the same Workflow as mail: classification, staff notification, ack only when asked", async () => {
+    const mb = (await repo().getMailboxByAddress(SUPPORT))!;
+    await repo().updateMailbox(mb.id, { notifyNewTicket: ["ops@acme.test"] });
+    const [out] = await runOne(() => post("/api/tickets", { mailbox: SUPPORT, subject: "Prepaid not loading", text: "I bought units but they never arrived.", ack: true }));
+    expect(out).toMatchObject({ ticketRef: "ACME-000001", acked: true, category: "question" });
+
+    const t = (await repo().findTicketByRef("ACME-000001"))!;
+    expect(t).toMatchObject({ category: "question", source: "portal", partition: "company:1", requesterVerified: true });
+    const msgs = await repo().db.selectFrom("messages").selectAll().where("ticket_id", "=", t.id).orderBy("created_at").execute();
+    expect(msgs.map((m) => `${m.direction}:${m.kind}`)).toEqual(["inbound:customer", "outbound:ack"]);
+    const events = await repo().db.selectFrom("ticket_events").select("type").where("ticket_id", "=", t.id).execute();
+    expect(events.map((e) => e.type)).toEqual(expect.arrayContaining(["ticket.created", "ticket.classified", "notification.sent"]));
+
+    // A reply goes through the Workflow too (plugins see message.received) but notifies nobody.
+    const [reply] = await runOne(() => post("/api/tickets/ACME-000001/messages", { text: "Any news?" }));
+    expect(reply).toMatchObject({ ticketRef: "ACME-000001", acked: false });
+    const sent = await repo().db.selectFrom("ticket_events").select("type").where("ticket_id", "=", t.id).where("type", "=", "notification.sent").execute();
+    expect(sent).toHaveLength(1);
+  });
+
+  it("marks mail tickets verified only when DMARC proved the sender", async () => {
+    const [ok] = await runOne(() => deliver(rawEmail({ from: CUSTOMER, to: SUPPORT, subject: "Proven" })));
+    const [bad] = await runOne(() => deliver(rawEmail({ from: "bob@cust.example", to: SUPPORT, subject: "Unproven", authResults: null }), "bob@cust.example"));
+    expect((await repo().findTicketByRef(ok!.ticketRef))!.requesterVerified).toBe(true);
+    expect((await repo().findTicketByRef(bad!.ticketRef))!.requesterVerified).toBe(false);
+  });
+});
+
 describe("classification", () => {
   const detail = async (ref: string) => (await repo().getTicketDetail(ref))!;
 

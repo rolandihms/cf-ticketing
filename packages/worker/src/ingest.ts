@@ -77,6 +77,8 @@ export async function ingestInbound(repo: HelpdeskRepo, mailbox: Mailbox, meta: 
     sourceIngestKey: meta.ingestKey,
     message,
     attachments,
+    // Requesters see a mail ticket in the host app only if DMARC proved who sent it.
+    requesterVerified: guard.senderVerified === true,
   });
   if (relatedRef) await repo.addEvent(ticket.id, "possible_related", "system:email", { ref: relatedRef });
   return { ticket, created: true, messageId, threadedBy: "new" };

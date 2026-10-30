@@ -7,9 +7,15 @@ export interface HostIdentity {
   externalId: string;
   email: string;
   name?: string;
-  role: "admin" | "agent";
-  /** The tenant this request is for (e.g. "company:42"), or null for staff who see every tenant. */
+  /** "requester": a customer of your app (a help desk contact, never an agent). See docs/EMBEDDING.md §7. */
+  role: "admin" | "agent" | "requester";
+  /**
+   * The tenant this request is for (e.g. "company:42"): for staff, the only one they see (null = every tenant);
+   * for a requester, their company (null = none).
+   */
   partition: string | null;
+  /** Requesters only: "own" (default) sees the tickets they raised; "partition" also every verified ticket in their company. */
+  visibility?: "own" | "partition";
 }
 
 /** Headers that authenticate a request as `identity`. Send only over a service binding or private network. */

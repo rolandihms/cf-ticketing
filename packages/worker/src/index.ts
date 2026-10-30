@@ -8,12 +8,12 @@ import { createApi } from "./api";
 import type { HelpdeskEnv } from "./env";
 import { handleEmail } from "./handler";
 import type { HelpdeskOptions } from "./options";
-import { type HelpdeskWorkflowParams, isAgentEvents, runAgentEvents, runInbound } from "./workflow";
+import { type HelpdeskWorkflowParams, isAgentEvents, isPortal, runAgentEvents, runInbound, runPortal } from "./workflow";
 
 export type { HelpdeskEnv } from "./env";
 export type { HelpdeskOptions } from "./options";
-export type { AgentEventsParams, HelpdeskWorkflowParams, InboundOutput, InboundParams } from "./workflow";
-export { _clearAccessCertCache, parseTrustedIdentity, type Principal, type TrustedIdentity } from "./auth";
+export type { AgentEventsParams, HelpdeskWorkflowParams, InboundOutput, InboundParams, PortalParams } from "./workflow";
+export { _clearAccessCertCache, parseTrustedIdentity, type Principal, type RequesterPrincipal, type RequesterVisibility, type StaffPrincipal, type TrustedIdentity } from "./auth";
 export { workersAI, DEFAULT_WORKERS_AI_MODEL } from "./ai/workers-ai";
 export { loggerPlugin } from "./plugins/logger";
 
@@ -35,7 +35,9 @@ export function createHelpdesk<E extends HelpdeskEnv>(options: HelpdeskOptions<E
     run(event: WorkflowEvent<HelpdeskWorkflowParams>, step: WorkflowStep) {
       const env = resolve(this.env as HelpdeskEnv);
       const p = event.payload;
-      return isAgentEvents(p) ? runAgentEvents(config, env, { ...event, payload: p }, step) : runInbound(config, env, { ...event, payload: p }, step);
+      if (isAgentEvents(p)) return runAgentEvents(config, env, { ...event, payload: p }, step);
+      if (isPortal(p)) return runPortal(config, env, { ...event, payload: p }, step);
+      return runInbound(config, env, { ...event, payload: p }, step);
     }
   }
 

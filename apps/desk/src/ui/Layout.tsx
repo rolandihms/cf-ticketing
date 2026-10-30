@@ -29,7 +29,7 @@ export function Layout() {
   }
   if (!me.data) return <div className="gate muted">Loading…</div>;
 
-  const agent = me.data.agent;
+  const agent = me.data.kind === "requester" ? undefined : me.data.agent;
   return (
     <div className="app">
       <header className="topbar">

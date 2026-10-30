@@ -1,7 +1,10 @@
 import type { Agent, AgentRole } from "@rolandihms/helpdesk-core";
+import type { Contact } from "@rolandihms/helpdesk-db";
 
 /** Who is calling the API. */
-export interface Principal {
+export type Principal = StaffPrincipal | RequesterPrincipal;
+
+export interface StaffPrincipal {
   kind: "service" | "agent";
   role: AgentRole;
   /** Recorded on ticket events, e.g. "agent:01H…" or "api". */
@@ -13,6 +16,25 @@ export interface Principal {
   via: "token" | "access" | "trusted";
 }
 
+/**
+ * A customer of the host app (docs/EMBEDDING.md §7). Maps to a contact, never to an agent: it can raise
+ * tickets, read the public side of the tickets it may see and reply to them, and nothing else.
+ */
+export interface RequesterPrincipal {
+  kind: "requester";
+  role: "requester";
+  /** "contact:01H…" */
+  actor: string;
+  contact: Contact;
+  /** The requester's company (partition), or null. */
+  partition: string | null;
+  /** "own": tickets this contact raised. "partition": also every ticket in `partition`. */
+  visibility: RequesterVisibility;
+  via: "trusted";
+}
+
+export type RequesterVisibility = "own" | "partition";
+
 // ---------------------------------------------------------------------------------------------
 // Trusted principal (docs/EMBEDDING.md): a host app that already authenticated its user calls the
 // help desk over a service binding with X-Helpdesk-Service-Key and this identity header.
@@ -23,9 +45,15 @@ export interface TrustedIdentity {
   externalId: string;
   email: string;
   name: string;
-  role: AgentRole;
-  /** Required, so "every partition" is never the accidental default: null = unrestricted. */
+  /** "requester": a customer (a contact), not staff. */
+  role: AgentRole | "requester";
+  /**
+   * Required, so "every partition" is never the accidental default: null = unrestricted (staff) or no
+   * company (requester).
+   */
   partition: string | null;
+  /** Requesters only; default "own". "partition" needs a partition. */
+  visibility?: RequesterVisibility;
 }
 
 const ID_RE = /^[\x21-\x7e]{1,128}$/;
@@ -40,14 +68,20 @@ export function parseTrustedIdentity(header: string | undefined): TrustedIdentit
   } catch {
     return "X-Helpdesk-Principal must be a JSON object";
   }
-  const { externalId, email, name, role, partition } = v;
+  const { externalId, email, name, role, partition, visibility } = v;
   if (typeof externalId !== "string" || !ID_RE.test(externalId)) return "externalId: 1-128 printable ASCII characters";
   if (typeof email !== "string" || email.length > 320 || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return "email is invalid";
   if (name !== undefined && (typeof name !== "string" || name.length > 255)) return "name: a string up to 255 characters";
-  if (role !== "admin" && role !== "agent") return 'role must be "admin" or "agent"';
+  if (role !== "admin" && role !== "agent" && role !== "requester") return 'role must be "admin", "agent" or "requester"';
   if (!("partition" in v)) return "partition is required (a string, or null for every partition)";
   if (partition !== null && (typeof partition !== "string" || !ID_RE.test(partition))) return "partition: null or 1-128 printable ASCII characters";
-  return { externalId, email: email.toLowerCase(), name: (name as string | undefined)?.trim() || email.split("@")[0]!, role, partition: partition as string | null };
+  const id: TrustedIdentity = { externalId, email: email.toLowerCase(), name: (name as string | undefined)?.trim() || email.split("@")[0]!, role, partition: partition as string | null };
+  if (role === "requester") {
+    if (visibility !== undefined && visibility !== "own" && visibility !== "partition") return 'visibility must be "own" or "partition"';
+    if (visibility === "partition" && partition === null) return 'visibility "partition" needs a partition';
+    id.visibility = visibility ?? "own";
+  } else if (visibility !== undefined) return "visibility is for requesters only";
+  return id;
 }
 
 const enc = new TextEncoder();
