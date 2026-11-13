@@ -13,7 +13,7 @@
   "dependencies": {
     "@cf-helpdesk/core": "*",
     "@cf-helpdesk/db": "*",
-    "hono": "^4.13.0",
+    "hono": "^4.13.16",
     "postal-mime": "^4.0.6"
   },
   "devDependencies": {
