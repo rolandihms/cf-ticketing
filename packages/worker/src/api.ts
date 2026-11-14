@@ -1,4 +1,4 @@
-import { type Agent, type AgentRole, normalizeMessageId, sha256Hex, subjectWithRef, type Ticket, TICKET_PRIORITIES, TICKET_STATUSES, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
+import { type Agent, type AgentRole, type MailboxLanguage, normalizeMessageId, sha256Hex, subjectWithRef, type Ticket, TICKET_PRIORITIES, TICKET_STATUSES, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
 import { AgentIdentityConflictError, type HelpdeskRepo, TicketConflictError, type TicketFilter, type TicketPatch, withRepo } from "@cf-helpdesk/db";
 import { type Context, Hono } from "hono";
 import { AccessUnavailableError, parseTrustedIdentity, type Principal, secretsEqual, verifyAccessJwt } from "./auth";
@@ -105,6 +105,7 @@ const preview = (text: string) => text.replace(/\s+/g, " ").trim().slice(0, 500)
 const rfc5987 = (s: string) => encodeURIComponent(s).replace(/['()*!]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`);
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 const ROLES: AgentRole[] = ["admin", "agent"];
+const MAILBOX_LANGUAGES: MailboxLanguage[] = ["en", "zh", "auto"];
 
 /** One event per field an update changed, for plugins (webhooks…). */
 function changeEvents(before: Ticket, after: Ticket, actor: string): AgentEvents {
@@ -253,15 +254,20 @@ export function createApi(config: HelpdeskOptions) {
   api.post("/api/mailboxes", async (c) => {
     requireAdmin(c);
     const p = principal(c);
-    const b = await body<{ address: string; name: string; refPrefix: string; fromName?: string; partition: string | null }>(c);
+    const b = await body<{ address: string; name: string; refPrefix: string; fromName?: string; partition: string | null; language?: string | null }>(c);
     if (!b.address?.includes("@") || !/^[A-Z0-9]{2,10}$/i.test(b.refPrefix ?? "")) {
       throw new HttpError(400, "address and refPrefix (2-10 alphanumerics) required");
+    }
+    let language: MailboxLanguage | null = null;
+    if (b.language !== undefined && b.language !== null) {
+      if (!MAILBOX_LANGUAGES.includes(b.language as MailboxLanguage)) throw new HttpError(400, `language must be one of ${MAILBOX_LANGUAGES.join(", ")}`);
+      language = b.language as MailboxLanguage;
     }
     const partition = p.partition ?? partitionField(b.partition) ?? null;
     const mailbox = await withRepo(c.env, async (r) => {
       const existing = await r.getMailboxByAddress(b.address!);
       if (existing && (!visible(p, existing.partition) || existing.partition !== partition)) throw new HttpError(409, "address is already in use");
-      return r.createMailbox({ address: b.address!, name: str(b.name, "name", 255), refPrefix: b.refPrefix!, fromName: b.fromName ?? null, partition });
+      return r.createMailbox({ address: b.address!, name: str(b.name, "name", 255), refPrefix: b.refPrefix!, fromName: b.fromName ?? null, partition, language });
     });
     return c.json(mailbox, 201);
   });

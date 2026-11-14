@@ -1,17 +1,18 @@
-import type { TicketFilter, TicketStatus } from "@cf-helpdesk/client";
+import type { TicketFilter } from "@cf-helpdesk/client";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useT } from "../lib/i18n";
 import { helpdesk } from "../lib/helpdesk";
 import { sessionQuery } from "./__root";
 
 type View = "open" | "mine" | "unassigned" | "pending" | "closed" | "all";
-const VIEWS: Record<View, { label: string; filter: TicketFilter }> = {
-  open: { label: "Open", filter: { status: ["new", "open"] } },
-  mine: { label: "Mine", filter: { assignee: "me", status: ["new", "open", "pending", "on_hold"] } },
-  unassigned: { label: "Unassigned", filter: { assignee: "unassigned", status: ["new", "open"] } },
-  pending: { label: "Waiting on customer", filter: { status: "pending" } },
-  closed: { label: "Solved / closed", filter: { status: ["solved", "closed"] } },
-  all: { label: "All", filter: {} },
+const VIEWS: Record<View, { filter: TicketFilter }> = {
+  open: { filter: { status: ["new", "open"] } },
+  mine: { filter: { assignee: "me", status: ["new", "open", "pending", "on_hold"] } },
+  unassigned: { filter: { assignee: "unassigned", status: ["new", "open"] } },
+  pending: { filter: { status: "pending" } },
+  closed: { filter: { status: ["solved", "closed"] } },
+  all: { filter: {} },
 };
 
 export const Route = createFileRoute("/")({
@@ -25,6 +26,7 @@ export const Route = createFileRoute("/")({
 function Inbox() {
   const { view = "open", q } = Route.useSearch();
   const navigate = Route.useNavigate();
+  const t = useT();
   const session = useQuery(sessionQuery);
   const agents = useQuery({ queryKey: ["agents"], queryFn: helpdesk.agents.list, enabled: !!session.data?.user });
   const tickets = useInfiniteQuery({
@@ -35,15 +37,15 @@ function Inbox() {
     enabled: !!session.data?.user,
   });
 
-  if (session.data && !session.data.user) return <p>Choose a demo user (top right) to see their tickets.</p>;
+  if (session.data && !session.data.user) return <p>{t("inbox.pickUser")}</p>;
   const agentName = (id: string | null) => (id ? (agents.data?.find((a) => a.id === id)?.name ?? "…") : "—");
 
   return (
     <main>
-      <nav style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }} aria-label="Views">
+      <nav style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }} aria-label={t("inbox.viewsNav")}>
         {(Object.keys(VIEWS) as View[]).map((v) => (
           <Link key={v} to="/" search={{ view: v, q }} aria-current={v === view ? "page" : undefined} style={{ fontWeight: v === view ? 700 : 400 }}>
-            {VIEWS[v].label}
+            {t(`views.${v}`)}
           </Link>
         ))}
         <form
@@ -53,48 +55,52 @@ function Inbox() {
             navigate({ search: { view, ...(q ? { q } : {}) } });
           }}
         >
-          <input name="q" defaultValue={q} placeholder="Search subject or ref" aria-label="Search" />
+          <input name="q" defaultValue={q} placeholder={t("inbox.searchPlaceholder")} aria-label={t("inbox.search")} />
         </form>
       </nav>
 
-      {tickets.error ? <p role="alert">Couldn't load tickets: {tickets.error.message}</p> : null}
+      {tickets.error ? (
+        <p role="alert">
+          {t("inbox.loadError")}: {tickets.error.message}
+        </p>
+      ) : null}
       <table style={{ width: "100%", borderCollapse: "collapse" }}>
         <thead>
           <tr style={{ textAlign: "left" }}>
-            <th>Ref</th>
-            <th>Subject</th>
-            <th>Status</th>
-            <th>Priority</th>
-            <th>Category</th>
-            <th>Assignee</th>
-            <th>Updated</th>
+            <th>{t("col.ref")}</th>
+            <th>{t("col.subject")}</th>
+            <th>{t("col.status")}</th>
+            <th>{t("col.priority")}</th>
+            <th>{t("col.category")}</th>
+            <th>{t("col.assignee")}</th>
+            <th>{t("col.updated")}</th>
           </tr>
         </thead>
         <tbody>
           {tickets.data?.pages
             .flatMap((p) => p.tickets)
-            .map((t) => (
-              <tr key={t.id} style={{ borderTop: "1px solid #ccc" }}>
+            .map((row) => (
+              <tr key={row.id} style={{ borderTop: "1px solid #ccc" }}>
                 <td>
-                  <Link to="/tickets/$ref" params={{ ref: t.ref }}>
-                    {t.ref}
+                  <Link to="/tickets/$ref" params={{ ref: row.ref }}>
+                    {row.ref}
                   </Link>
                 </td>
-                <td>{t.subject}</td>
-                <td>{t.status as TicketStatus}</td>
-                <td>{t.priority}</td>
-                <td>{t.category ?? "—"}</td>
-                <td>{agentName(t.assigneeId)}</td>
-                <td>{new Date(t.updatedAt).toLocaleString()}</td>
+                <td>{row.subject}</td>
+                <td>{t(`status.${row.status}`)}</td>
+                <td>{t(`priority.${row.priority}`)}</td>
+                <td>{row.category ?? "—"}</td>
+                <td>{agentName(row.assigneeId)}</td>
+                <td>{new Date(row.updatedAt).toLocaleString()}</td>
               </tr>
             ))}
         </tbody>
       </table>
-      {tickets.isPending ? <p>Loading…</p> : null}
-      {tickets.data && tickets.data.pages[0]!.tickets.length === 0 ? <p>No tickets here.</p> : null}
+      {tickets.isPending ? <p>{t("inbox.loading")}</p> : null}
+      {tickets.data && tickets.data.pages[0]!.tickets.length === 0 ? <p>{t("inbox.empty")}</p> : null}
       {tickets.hasNextPage ? (
         <button type="button" onClick={() => tickets.fetchNextPage()} disabled={tickets.isFetchingNextPage}>
-          Load more
+          {t("inbox.loadMore")}
         </button>
       ) : null}
     </main>

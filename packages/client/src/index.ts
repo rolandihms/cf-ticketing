@@ -1,6 +1,6 @@
 // @cf-helpdesk/client: a small typed client for the help desk API. No framework, no dependencies at
 // runtime: works in browsers, Workers and Node. Bring your own UI (docs/EMBEDDING.md).
-import type { Agent, AgentRole, Mailbox, Message, Principal, Ticket, TicketDetail, TicketFilter, TicketPage, TicketPatch, TicketStatus } from "./types";
+import type { Agent, AgentRole, Mailbox, MailboxLanguage, Message, Principal, Ticket, TicketDetail, TicketFilter, TicketPage, TicketPatch, TicketStatus } from "./types";
 
 export type * from "./types";
 
@@ -99,7 +99,7 @@ export function createHelpdeskClient(opts: ClientOptions) {
 
     mailboxes: {
       list: async () => (await json<{ mailboxes: Mailbox[] }>("GET", "/mailboxes")).mailboxes,
-      create: (input: { address: string; name: string; refPrefix: string; fromName?: string; partition?: string | null }) =>
+      create: (input: { address: string; name: string; refPrefix: string; fromName?: string; partition?: string | null; language?: MailboxLanguage | null }) =>
         json<Mailbox>("POST", "/mailboxes", { body: input }),
     },
   };

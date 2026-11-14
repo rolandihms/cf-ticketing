@@ -2,16 +2,19 @@ import { HelpdeskApiError, type Message, type TicketDetail, type TicketPatch, ty
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
+import { useT, type DictKey } from "../lib/i18n";
 import { helpdesk } from "../lib/helpdesk";
 
 const STATUSES: TicketStatus[] = ["new", "open", "pending", "on_hold", "solved", "closed"];
 const PRIORITIES: TicketPriority[] = ["low", "normal", "high", "urgent"];
+const MSG_KINDS = ["customer", "ack", "agent_reply", "note"] as const;
 
 export const Route = createFileRoute("/tickets/$ref")({ component: TicketPage });
 
 function TicketPage() {
   const { ref } = Route.useParams();
   const qc = useQueryClient();
+  const t = useT();
   const detail = useQuery({ queryKey: ["ticket", ref], queryFn: () => helpdesk.tickets.get(ref) });
   const agents = useQuery({ queryKey: ["agents"], queryFn: helpdesk.agents.list });
   const refresh = () => Promise.all([qc.invalidateQueries({ queryKey: ["ticket", ref] }), qc.invalidateQueries({ queryKey: ["tickets"] })]);
@@ -22,48 +25,50 @@ function TicketPage() {
   });
 
   if (detail.error) {
-    return <p role="alert">{detail.error instanceof HelpdeskApiError && detail.error.status === 404 ? "No such ticket (or not in your company)." : detail.error.message}</p>;
+    return <p role="alert">{detail.error instanceof HelpdeskApiError && detail.error.status === 404 ? t("ticket.notFound") : detail.error.message}</p>;
   }
-  if (!detail.data) return <p>Loading…</p>;
+  if (!detail.data) return <p>{t("ticket.loading")}</p>;
   const { ticket, requester, messages, attachments, events } = detail.data;
 
   return (
     <main>
       <p>
-        <Link to="/">
-          ← Inbox
-        </Link>
+        <Link to="/">{t("ticket.back")}</Link>
       </p>
       <h1>
         {ticket.ref}: {ticket.subject}
       </h1>
       <p>
-        From {requester?.name ?? ""} &lt;{requester?.email}&gt; · category {ticket.category ?? "—"}
+        {t("ticket.from")} {requester?.name ?? ""} &lt;{requester?.email}&gt; · {t("ticket.category")} {ticket.category ?? "—"}
         {ticket.summary ? ` · ${ticket.summary}` : ""}
       </p>
 
       <fieldset disabled={update.isPending} style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-        <legend>Ticket</legend>
+        <legend>{t("ticket.fieldset")}</legend>
         <label>
-          Status{" "}
+          {t("ticket.status")}{" "}
           <select value={ticket.status} onChange={(e) => update.mutate({ status: e.target.value as TicketStatus })}>
             {STATUSES.map((s) => (
-              <option key={s}>{s}</option>
+              <option key={s} value={s}>
+                {t(`status.${s}`)}
+              </option>
             ))}
           </select>
         </label>
         <label>
-          Priority{" "}
+          {t("ticket.priority")}{" "}
           <select value={ticket.priority} onChange={(e) => update.mutate({ priority: e.target.value as TicketPriority })}>
             {PRIORITIES.map((p) => (
-              <option key={p}>{p}</option>
+              <option key={p} value={p}>
+                {t(`priority.${p}`)}
+              </option>
             ))}
           </select>
         </label>
         <label>
-          Assignee{" "}
+          {t("ticket.assignee")}{" "}
           <select value={ticket.assigneeId ?? ""} onChange={(e) => update.mutate({ assignee: e.target.value || null })}>
-            <option value="">(unassigned)</option>
+            <option value="">{t("ticket.unassigned")}</option>
             {agents.data?.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
@@ -72,16 +77,14 @@ function TicketPage() {
           </select>
         </label>
         <button type="button" onClick={() => update.mutate({ assignee: "me" })}>
-          Assign to me
+          {t("ticket.assignToMe")}
         </button>
       </fieldset>
       {update.error ? (
-        <p role="alert">
-          {update.error instanceof HelpdeskApiError && update.error.status === 409 ? "Someone else changed this ticket; reloaded." : update.error.message}
-        </p>
+        <p role="alert">{update.error instanceof HelpdeskApiError && update.error.status === 409 ? t("ticket.conflict") : update.error.message}</p>
       ) : null}
 
-      <h2>Conversation</h2>
+      <h2>{t("ticket.conversation")}</h2>
       <ol style={{ listStyle: "none", padding: 0 }}>
         {messages.map((m) => (
           <MessageItem key={m.id} message={m} attachments={attachments.filter((a) => a.message_id === m.id)} />
@@ -92,7 +95,9 @@ function TicketPage() {
       <Compose key={ref} ticketRef={ref} onDone={refresh} />
 
       <details>
-        <summary>History ({events.length})</summary>
+        <summary>
+          {t("ticket.history")} ({events.length})
+        </summary>
         <ul>
           {events.map((e) => (
             <li key={e.id}>
@@ -106,19 +111,18 @@ function TicketPage() {
   );
 }
 
-const LABEL: Record<string, string> = { customer: "Customer", ack: "Auto-acknowledgement", agent_reply: "Reply", note: "Internal note" };
-
 function MessageItem({ message: m, attachments }: { message: Message; attachments: TicketDetail["attachments"] }) {
   const [full, setFull] = useState<string | null>(null);
+  const t = useT();
   return (
     <li style={{ borderTop: "1px solid #ccc", padding: "8px 0", background: m.direction === "note" ? "#fff8dc" : undefined }}>
       <div>
-        <strong>{LABEL[m.kind] ?? m.kind}</strong> · {m.from_addr} · {new Date(m.created_at).toLocaleString()}
+        <strong>{(MSG_KINDS as readonly string[]).includes(m.kind) ? t(`msg.${m.kind}` as DictKey) : m.kind}</strong> · {m.from_addr} · {new Date(m.created_at).toLocaleString()}
       </div>
       <p style={{ whiteSpace: "pre-wrap" }}>{full ?? m.text_preview}</p>
       {full === null && (m.text_preview?.length ?? 0) >= 500 ? (
         <button type="button" onClick={async () => setFull(await helpdesk.messages.text(m.id))}>
-          Show full message
+          {t("msg.showFull")}
         </button>
       ) : null}
       {attachments.length ? (
@@ -126,7 +130,7 @@ function MessageItem({ message: m, attachments }: { message: Message; attachment
           {attachments.map((a) => (
             <li key={a.id}>
               <a href={helpdesk.attachments.url(a.id)} download>
-                {a.filename ?? "attachment"}
+                {a.filename ?? t("msg.attachment")}
               </a>{" "}
               ({a.mime_type}, {Math.ceil(a.size / 1024)} KB)
             </li>
@@ -141,6 +145,7 @@ function Compose({ ticketRef, onDone }: { ticketRef: string; onDone: () => Promi
   const [mode, setMode] = useState<"reply" | "note">("reply");
   const [text, setText] = useState("");
   const [after, setAfter] = useState<TicketStatus>("pending");
+  const t = useT();
   // One idempotency key per composed reply: a retry after a network error never emails twice.
   const key = useRef(crypto.randomUUID());
   const send = useMutation({
@@ -160,28 +165,30 @@ function Compose({ ticketRef, onDone }: { ticketRef: string; onDone: () => Promi
       }}
       style={{ display: "grid", gap: 8, marginBlock: 16 }}
     >
-      <div role="radiogroup" aria-label="Message type">
+      <div role="radiogroup" aria-label={t("msg.type")}>
         <label>
-          <input type="radio" checked={mode === "reply"} onChange={() => setMode("reply")} /> Reply to customer (emailed)
+          <input type="radio" checked={mode === "reply"} onChange={() => setMode("reply")} /> {t("msg.replyCustomer")}
         </label>{" "}
         <label>
-          <input type="radio" checked={mode === "note"} onChange={() => setMode("note")} /> Internal note
+          <input type="radio" checked={mode === "note"} onChange={() => setMode("note")} /> {t("msg.internalNote")}
         </label>
       </div>
-      <textarea value={text} onChange={(e) => setText(e.target.value)} rows={6} aria-label={mode === "reply" ? "Reply" : "Note"} />
+      <textarea value={text} onChange={(e) => setText(e.target.value)} rows={6} aria-label={mode === "reply" ? t("msg.replyAria") : t("msg.noteAria")} />
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         {mode === "reply" ? (
           <label>
-            Then set status{" "}
+            {t("msg.thenSetStatus")}{" "}
             <select value={after} onChange={(e) => setAfter(e.target.value as TicketStatus)}>
               {STATUSES.map((s) => (
-                <option key={s}>{s}</option>
+                <option key={s} value={s}>
+                  {t(`status.${s}`)}
+                </option>
               ))}
             </select>
           </label>
         ) : null}
         <button type="submit" disabled={send.isPending || !text.trim()}>
-          {send.isPending ? "Sending…" : mode === "reply" ? "Send reply" : "Add note"}
+          {send.isPending ? t("msg.sending") : mode === "reply" ? t("msg.sendReply") : t("msg.addNote")}
         </button>
       </div>
       {send.error ? <p role="alert">{send.error.message}</p> : null}

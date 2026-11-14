@@ -13,6 +13,7 @@ import {
   type Answers,
   type DbDriver,
   domainOf,
+  type MailboxLanguage,
   prefixFromAddress,
   profileFromAddress,
 } from "./answers";
@@ -36,6 +37,7 @@ Usage: npm run setup -- [options]
   --profile <name>         Writes apps/worker/wrangler.<profile>.jsonc (default: from the domain)
   --account-id <id>        Cloudflare account (asked if your login has several)
   --ack-mode <mode>        send (Workers Paid, any recipient) | reply (Free plan) | off  (default: send)
+  --language <lang>        Acknowledgement email language: en | zh | auto  (default: auto)
   --db <driver>            d1 (default) | postgres | mysql | planetscale
   --database-url <url>     Connection URL for postgres/mysql/planetscale
   --table-prefix <p_>      Prefix every table (e.g. hd_) when sharing a database with another app
@@ -81,6 +83,7 @@ async function main() {
       profile: { type: "string" },
       "account-id": { type: "string" },
       "ack-mode": { type: "string" },
+      language: { type: "string" },
       db: { type: "string" },
       "database-url": { type: "string" },
       "table-prefix": { type: "string" },
@@ -152,6 +155,10 @@ async function main() {
         (await ask("Acknowledge new tickets by email? send = needs Workers Paid ($5/mo) | reply = Free plan (DMARC-passing senders only) | off", "send", (v) =>
           ["send", "reply", "off"].includes(v),
         ))) as AckMode,
+      language: (f.language ??
+        (await ask("Acknowledgement email language: en | zh | auto (auto = detect from the customer's message)", "auto", (v) =>
+          ["en", "zh", "auto"].includes(v),
+        ))) as MailboxLanguage,
       db: (f.db ?? (await ask("Database: d1 | postgres | mysql | planetscale", "d1", (v) => ["d1", "postgres", "mysql", "planetscale"].includes(v)))) as DbDriver,
     };
     if (f["table-prefix"]) answers.tablePrefix = f["table-prefix"];
