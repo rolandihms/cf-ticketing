@@ -45,6 +45,16 @@ export function repoContract(name: string, makeRepo: () => Promise<HelpdeskRepo>
       expect(await repo.listMailboxAddresses()).toEqual(["support@acme.test"]);
     });
 
+    it("stores the ack language in settings_json (null = auto)", async () => {
+      const zh = await repo.createMailbox({ address: "zh@acme.test", name: "Zh", refPrefix: "ZHXX", language: "zh" });
+      expect(zh.language).toBe("zh");
+      expect(await repo.getMailboxByAddress("zh@acme.test")).toMatchObject({ language: "zh" });
+      expect((await repo.createMailbox({ address: "auto@acme.test", name: "Auto", refPrefix: "AUTOX", language: "auto" })).language).toBe("auto");
+      // Omitted language → settings_json stays null → auto-detect at ack time.
+      expect(mailbox.language).toBeNull();
+      expect((await repo.getMailboxByAddress("support@acme.test"))!.language).toBeNull();
+    });
+
     it("upserts contacts; comparisons are byte-exact on every backend", async () => {
       const a = await repo.upsertContact("Jane@Cust.example", "Jane");
       const b = await repo.upsertContact("jane@cust.example", null);

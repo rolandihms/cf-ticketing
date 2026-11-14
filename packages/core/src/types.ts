@@ -4,6 +4,9 @@ export type MessageDirection = "inbound" | "outbound" | "note";
 
 export type AgentRole = "admin" | "agent";
 
+/** Language of the acknowledgement email sent to customers. "auto" detects it from the inbound message. */
+export type MailboxLanguage = "en" | "zh" | "auto";
+
 export interface Agent {
   id: string;
   email: string;
@@ -28,6 +31,8 @@ export interface Mailbox {
   fromName: string | null;
   /** Opaque tenant key chosen by the host app (e.g. "company:42"); copied to the mailbox's tickets. */
   partition: string | null;
+  /** Acknowledgement email language; null = auto-detect from the inbound message. Stored in settings_json. */
+  language: MailboxLanguage | null;
 }
 
 export interface Ticket {

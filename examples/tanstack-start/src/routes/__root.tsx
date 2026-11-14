@@ -1,7 +1,8 @@
 /// <reference types="vite/client" />
 import { type QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createRootRouteWithContext, HeadContent, Link, Outlet, Scripts } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
+import { setLocale, useLocale, useT } from "../lib/i18n";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   head: () => ({
@@ -27,6 +28,11 @@ function Shell({ children }: { children: ReactNode }) {
 
 function Root() {
   const { queryClient } = Route.useRouteContext();
+  const locale = useLocale();
+  // SSR renders lang="en"; once hydrated, follow the user's language choice.
+  useEffect(() => {
+    document.documentElement.lang = locale === "zh" ? "zh-Hant" : "en";
+  }, [locale]);
   return (
     <QueryClientProvider client={queryClient}>
       <header style={{ display: "flex", gap: 16, alignItems: "baseline", borderBottom: "1px solid", paddingBottom: 8, marginBottom: 16 }}>
@@ -34,6 +40,7 @@ function Root() {
           <strong>Help desk</strong>
         </Link>
         <span style={{ flex: 1 }} />
+        <LanguageSwitcher />
         <SessionSwitcher />
       </header>
       <Outlet />
@@ -51,6 +58,7 @@ export const sessionQuery = { queryKey: ["session"], queryFn: async (): Promise<
 /** Demo only: pick who you are. A real host has its own login. */
 function SessionSwitcher() {
   const qc = useQueryClient();
+  const t = useT();
   const { data } = useQuery(sessionQuery);
   if (!data) return null;
   const choose = async (id: string) => {
@@ -59,9 +67,9 @@ function SessionSwitcher() {
   };
   return (
     <label>
-      Signed in as{" "}
-      <select value={data.user?.id ?? ""} onChange={(e) => choose(e.target.value)} aria-label="Demo user">
-        <option value="">(nobody)</option>
+      {t("root.signedInAs")}{" "}
+      <select value={data.user?.id ?? ""} onChange={(e) => choose(e.target.value)} aria-label={t("root.demoUser")}>
+        <option value="">{t("root.nobody")}</option>
         {data.users.map((u) => (
           <option key={u.id} value={u.id}>
             {u.label}
@@ -69,5 +77,21 @@ function SessionSwitcher() {
         ))}
       </select>
     </label>
+  );
+}
+
+/** Demo only: UI language switcher. The choice persists in localStorage. */
+function LanguageSwitcher() {
+  const t = useT();
+  const locale = useLocale();
+  return (
+    <span role="group" aria-label={t("root.language")}>
+      <button type="button" aria-pressed={locale === "en"} onClick={() => setLocale("en")}>
+        {t("root.en")}
+      </button>{" "}
+      <button type="button" aria-pressed={locale === "zh"} onClick={() => setLocale("zh")}>
+        {t("root.zh")}
+      </button>
+    </span>
   );
 }

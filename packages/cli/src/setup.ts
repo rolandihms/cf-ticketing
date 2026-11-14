@@ -312,7 +312,7 @@ async function seedMailbox(ctx: SetupContext, workerUrl: string, token: string):
       const res = await doFetch(`${workerUrl}/api/mailboxes`, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({ address: a.address, name: a.mailboxName, refPrefix: a.refPrefix, fromName: a.mailboxName }),
+        body: JSON.stringify({ address: a.address, name: a.mailboxName, refPrefix: a.refPrefix, fromName: a.mailboxName, language: a.language }),
       });
       if (res.status === 201) return true;
       if (res.status !== 503 && res.status !== 401 && res.status < 500) return false;

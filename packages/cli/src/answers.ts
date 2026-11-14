@@ -2,6 +2,8 @@ import { TABLE_PREFIX_RE } from "@cf-helpdesk/db/migrations";
 
 export type DbDriver = "d1" | "postgres" | "mysql" | "planetscale";
 export type AckMode = "send" | "reply" | "off";
+/** Language of the acknowledgement email; must match the API's accepted mailbox languages. */
+export type MailboxLanguage = "en" | "zh" | "auto";
 
 /** Everything the setup needs to know. Collected from flags and/or prompts. */
 export interface Answers {
@@ -12,6 +14,8 @@ export interface Answers {
   mailboxName: string;
   /** Ticket reference prefix, e.g. ACME → ACME-000123 */
   refPrefix: string;
+  /** Acknowledgement email language; "auto" detects it from the customer's message (default). */
+  language?: MailboxLanguage | null;
   /** Worker name; also prefixes the D1 database, R2 bucket and Workflow. */
   workerName: string;
   /** Local profile; config is written to apps/worker/wrangler.<profile>.jsonc */

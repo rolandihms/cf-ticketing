@@ -59,6 +59,7 @@ Setup checks that the subdomain's MX records point to Cloudflare. If they don't,
 --profile <name>         Config file suffix (default: from the domain)
 --account-id <id>        Cloudflare account id
 --ack-mode send|reply|off
+--language en|zh|auto     Acknowledgement email language (default: auto = detect)
 --db d1|postgres|mysql|planetscale
 --database-url <url>     For postgres/mysql/planetscale
 --config-only            Create resources and write the config; don't migrate, deploy or touch mail routing

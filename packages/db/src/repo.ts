@@ -1,4 +1,4 @@
-import { type Agent, type AgentRole, type ClassificationOutcome, formatRef, type Mailbox, type Ticket, type TicketLink, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
+import { type Agent, type AgentRole, type ClassificationOutcome, formatRef, type Mailbox, type MailboxLanguage, type Ticket, type TicketLink, type TicketPriority, type TicketStatus } from "@cf-helpdesk/core";
 import { type Compilable, type InsertQueryBuilder, type InsertResult, Kysely, sql, type Transaction } from "kysely";
 import { monotonicFactory } from "ulidx";
 
@@ -75,7 +75,7 @@ export interface SaveClassificationInput {
 export interface HelpdeskRepo {
   readonly dialect: SqlDialect;
   getMailboxByAddress(address: string): Promise<Mailbox | null>;
-  createMailbox(input: { address: string; name: string; refPrefix: string; fromName?: string | null; partition?: string | null }): Promise<Mailbox>;
+  createMailbox(input: { address: string; name: string; refPrefix: string; fromName?: string | null; partition?: string | null; language?: MailboxLanguage | null }): Promise<Mailbox>;
   listMailboxAddresses(): Promise<string[]>;
   upsertContact(email: string, name: string | null): Promise<Contact>;
   getContact(id: string): Promise<Contact | null>;
@@ -196,7 +196,18 @@ function toAgent(r: AgentsTable): Agent {
 }
 
 function toMailbox(r: MailboxesTable): Mailbox {
-  return { id: r.id, address: r.address, name: r.name, refPrefix: r.ref_prefix, fromName: r.from_name, partition: r.partition_key ?? null };
+  return { id: r.id, address: r.address, name: r.name, refPrefix: r.ref_prefix, fromName: r.from_name, partition: r.partition_key ?? null, language: parseMailboxLanguage(r.settings_json) };
+}
+
+/** Parse the ack language out of the free-form settings_json; anything unexpected falls back to auto. */
+function parseMailboxLanguage(settingsJson: string | null): MailboxLanguage | null {
+  if (!settingsJson) return null;
+  try {
+    const v = (JSON.parse(settingsJson) as { language?: unknown }).language;
+    return v === "en" || v === "zh" || v === "auto" ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 const milli = (x: number) => Math.round(Math.min(1, Math.max(0, x)) * 1000);
@@ -240,7 +251,7 @@ export class SqlRepo implements HelpdeskRepo {
     return r ? toMailbox(r) : null;
   }
 
-  async createMailbox(input: { address: string; name: string; refPrefix: string; fromName?: string | null; partition?: string | null }) {
+  async createMailbox(input: { address: string; name: string; refPrefix: string; fromName?: string | null; partition?: string | null; language?: MailboxLanguage | null }) {
     const address = input.address.toLowerCase();
     await this.insertIgnore(
       this.db.insertInto("mailboxes").values({
@@ -249,7 +260,7 @@ export class SqlRepo implements HelpdeskRepo {
         name: input.name,
         ref_prefix: input.refPrefix.toUpperCase(),
         from_name: input.fromName ?? null,
-        settings_json: null,
+        settings_json: input.language ? JSON.stringify({ language: input.language }) : null,
         created_at: now(),
         partition_key: input.partition ?? null,
       }),
